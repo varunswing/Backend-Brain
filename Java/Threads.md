@@ -207,3 +207,145 @@ public class Main {
 | `ScheduledExecutorService`  | ❌            | ✅            | ✅        | ✅            |
 
 ---
+
+Sure! Let's dive deep into **`ExecutorService`** in Java.
+
+---
+
+## 🔧 What is `ExecutorService`?
+
+`ExecutorService` is a part of Java's **concurrent framework** (`java.util.concurrent`). It is an **interface** that represents an advanced thread pool — it provides a **high-level API to manage threads**, making it easier and more powerful than manually creating threads using `Thread` or `Runnable`.
+
+---
+
+## ✅ Why use `ExecutorService` instead of `Thread`?
+
+| Problem with `Thread`                   | Solution in `ExecutorService`  |
+| --------------------------------------- | ------------------------------ |
+| Hard to manage lifecycle of threads     | Executor manages it for you    |
+| Can’t reuse threads (1 thread per task) | Thread pooling is built-in     |
+| No way to return result from `Runnable` | Use `Callable` + `Future`      |
+| No built-in scheduling/delayed tasks    | Use `ScheduledExecutorService` |
+
+---
+
+## 🔄 Common Executors (via `Executors` utility class)
+
+### 1. `Executors.newFixedThreadPool(int n)`
+
+* A thread pool with a **fixed number of threads**.
+
+### 2. `Executors.newCachedThreadPool()`
+
+* A pool that creates **new threads as needed**, but **reuses** idle threads.
+
+### 3. `Executors.newSingleThreadExecutor()`
+
+* **Single thread** to execute tasks sequentially.
+
+### 4. `Executors.newScheduledThreadPool(int n)`
+
+* Can **schedule tasks** to run after a delay or periodically.
+
+---
+
+## 🔨 How to use `ExecutorService`?
+
+### ✅ Step-by-step example:
+
+```java
+import java.util.concurrent.*;
+
+public class ExecutorExample {
+    public static void main(String[] args) {
+        // Step 1: Create ExecutorService
+        ExecutorService executor = Executors.newFixedThreadPool(3);
+
+        // Step 2: Submit tasks (Runnable or Callable)
+        for (int i = 0; i < 5; i++) {
+            int taskId = i;
+            executor.submit(() -> {
+                System.out.println("Task " + taskId + " executed by " + Thread.currentThread().getName());
+            });
+        }
+
+        // Step 3: Shutdown (optional, but important)
+        executor.shutdown();
+    }
+}
+```
+
+---
+
+## 🔁 Callable + Future (with return value):
+
+```java
+import java.util.concurrent.*;
+
+public class CallableExample {
+    public static void main(String[] args) throws Exception {
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+
+        Callable<Integer> task = () -> {
+            // Simulate computation
+            Thread.sleep(1000);
+            return 42;
+        };
+
+        Future<Integer> result = executor.submit(task);
+
+        System.out.println("Waiting for result...");
+        System.out.println("Result: " + result.get());  // Blocks until done
+
+        executor.shutdown();
+    }
+}
+```
+
+---
+
+## 🔄 Lifecycle Methods
+
+| Method               | Description                                                               |
+| -------------------- | ------------------------------------------------------------------------- |
+| `submit(task)`       | Submits a task (Runnable/Callable)                                        |
+| `shutdown()`         | Gracefully shuts down (executes remaining tasks, doesn't accept new ones) |
+| `shutdownNow()`      | Immediately stops all tasks                                               |
+| `isShutdown()`       | Returns true if shutdown has been initiated                               |
+| `isTerminated()`     | Returns true if all tasks are finished after shutdown                     |
+| `awaitTermination()` | Blocks until all tasks finish or timeout                                  |
+
+---
+
+## 🧠 Best Practices
+
+* Always **shutdown** the executor after task submission is done.
+* Use `Callable` and `Future` if you need to **get results** or **handle exceptions**.
+* Use `ScheduledExecutorService` for **delayed or periodic tasks**.
+* Avoid creating too many threads. Use a **fixed thread pool** to control concurrency.
+
+---
+
+## ⏱️ ScheduledExecutorService (Bonus)
+
+```java
+ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
+
+scheduler.schedule(() -> {
+    System.out.println("Task runs after 5 seconds");
+}, 5, TimeUnit.SECONDS);
+```
+
+---
+
+## ✅ Summary
+
+| Feature                   | Thread       | ExecutorService              |
+| ------------------------- | ------------ | ---------------------------- |
+| Reusable Threads          | ❌            | ✅                            |
+| Returns a result          | ❌ (Runnable) | ✅ (Callable + Future)        |
+| Thread Pool               | ❌            | ✅                            |
+| Schedule task after delay | ❌            | ✅ (ScheduledExecutorService) |
+| Manage shutdown           | ❌            | ✅                            |
+
+---

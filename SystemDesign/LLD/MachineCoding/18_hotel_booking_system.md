@@ -1,555 +1,754 @@
-# Hotel Booking System - System Design Interview
+# Hotel Booking System - Low Level Design (Machine Coding)
+
+## Table of Contents
+1. [Problem Statement](#problem-statement)
+2. [Requirements](#requirements)
+3. [Database Design with Explanations](#database-design-with-explanations)
+4. [Design Patterns & SOLID](#design-patterns--solid)
+5. [Code Implementation](#code-implementation)
+6. [Edge Cases & Tests](#edge-cases--tests)
+
+---
 
 ## Problem Statement
-*"Design a hotel booking platform like Booking.com or Expedia that handles millions of users searching and booking hotel rooms globally with real-time inventory management."*
+
+Design a hotel booking system (Booking.com / MakeMyTrip) that supports searching hotels, checking room availability for date ranges, dynamic pricing, and booking with no overbooking.
 
 ---
 
-## Phase 1: Requirements Clarification (8 minutes)
+## Requirements
 
-### Questions I Would Ask:
+### Functional
+1. Search hotels by city, dates, guests, filters
+2. View room availability for a date range
+3. Book rooms with date range (no overbooking)
+4. Dynamic pricing (seasonal, demand-based)
+5. Cancel booking with refund rules
+6. Guest reviews and ratings
 
-**Functional Requirements:**
-- "What core features do we need?" → Hotel search, room booking, payment processing, inventory management
-- "Should we support real-time pricing?" → Yes, dynamic pricing based on demand, seasons, events
-- "Do we need user reviews and ratings?" → Yes, bidirectional reviews between guests and hotels
-- "What about cancellation policies?" → Yes, flexible cancellation with different policies per hotel
-- "Should we support corporate bookings?" → Yes, bulk bookings and corporate discounts
-- "Do we need loyalty programs?" → Yes, points system and tier-based benefits
-
-**Non-Functional Requirements:**
-- "What's our scale?" → 100M users, 1M hotels, 50M bookings/year
-- "Expected search latency?" → <200ms for hotel search, <100ms booking confirmation
-- "Availability needs?" → 99.99% uptime (travel bookings are time-sensitive)
-- "Geographic coverage?" → Global platform with multi-currency, multi-language
-- "Peak load patterns?" → Holiday seasons, events can cause 10x traffic spikes
-
-### Requirements Summary:
-- **Scale**: 100M users, 1M hotels, 50M bookings annually, 10K+ searches/second
-- **Features**: Search, booking, payments, reviews, inventory management, pricing
-- **Performance**: <200ms search, <100ms booking, real-time availability
-- **Global**: Multi-region, multi-currency, dynamic pricing
-- **Reliability**: Zero double bookings, accurate inventory
+### Non-Functional
+- < 200ms search, < 500ms booking
+- Zero overbooking (strong consistency for inventory)
+- 50M bookings/year, 100M users
 
 ---
 
-## Phase 2: Capacity Estimation (5 minutes)
+## Database Design with Explanations
 
-### Traffic Estimation:
-```
-Daily active users: 10M users
-Daily searches: 10M users × 5 searches = 50M searches
-Daily bookings: 50M searches × 2% conversion = 1M bookings
-Peak search QPS: 50M ÷ 86,400 × 3 (peak) = ~1,700 QPS
-Peak booking QPS: 1M ÷ 86,400 × 3 = ~35 QPS
-```
-
-### Storage Estimation:
-```
-Hotels: 1M hotels × 10KB = 10GB
-Rooms: 50M rooms × 2KB = 100GB
-Users: 100M users × 2KB = 200GB
-Bookings: 1M/day × 2KB × 365 × 5 years = 3.6TB
-Reviews: 500K/day × 1KB × 365 × 5 years = 900GB
-Images: 1M hotels × 20 images × 500KB = 10TB
-Total: ~15TB with indexes and replicas
-```
-
-### Memory Requirements:
-```
-Search cache: Hot hotels and room data = 5GB
-User sessions: 1M concurrent × 2KB = 2GB
-Inventory cache: Real-time availability = 2GB
-Pricing cache: Dynamic rates = 1GB
-Total memory: ~10GB per region
-```
-
----
-
-## Phase 3: High-Level Architecture (12 minutes)
-
-```
-┌─────────────┐  ┌─────────────┐  ┌─────────────┐
-│Mobile Apps  │  │Web Client   │  │Hotel Portal │
-│- Search     │  │- Browse     │  │- Inventory  │
-│- Book       │  │- Book       │  │- Analytics  │
-└─────────────┘  └─────────────┘  └─────────────┘
-       │                │                │
-       └────────────────┼────────────────┘
-                        │
-                        ▼
-┌─────────────────────────────────────────┐
-│             CDN + Load Balancer         │
-│- Global edge locations - Cache         │
-└─────────────────────────────────────────┘
-                        │
-                        ▼
-┌─────────────────────────────────────────┐
-│              API Gateway                │
-│- Authentication - Rate limiting         │
-│- Request routing - Circuit breaker     │
-└─────────────────────────────────────────┘
-                        │
-    ┌───────────────────┼───────────────────┐
-    │                   │                   │
-    ▼                   ▼                   ▼
-┌────────────┐ ┌────────────┐ ┌────────────┐
-│Search      │ │Booking     │ │User        │
-│Service     │ │Service     │ │Service     │
-│            │ │            │ │            │
-│- Hotels    │ │- Reserve   │ │- Profile   │
-│- Filter    │ │- Confirm   │ │- Auth      │
-│- Ranking   │ │- Cancel    │ │- Loyalty   │
-└────────────┘ └────────────┘ └────────────┘
-    │                   │                   │
-    └───────────────────┼───────────────────┘
-                        │
-    ┌───────────────────┼───────────────────┐
-    │                   │                   │
-    ▼                   ▼                   ▼
-┌────────────┐ ┌────────────┐ ┌────────────┐
-│Inventory   │ │Pricing     │ │Payment     │
-│Service     │ │Service     │ │Service     │
-│            │ │            │ │            │
-│- Rooms     │ │- Dynamic   │ │- Process   │
-│- Avail     │ │- Seasonal  │ │- Refund    │
-│- Block     │ │- Demand    │ │- Multi-pay │
-└────────────┘ └────────────┘ └────────────┘
-                        │
-                        ▼
-┌─────────────────────────────────────────┐
-│           Supporting Services           │
-│                                         │
-│ ┌─────────┐  ┌─────────┐  ┌─────────┐   │
-│ │Review   │  │Notification│ │Analytics│   │
-│ │Service  │  │Service   │ │Service  │   │
-│ │         │  │          │ │         │   │
-│ │- Rating │  │- Email   │ │- Reports│   │
-│ │- Feedback│ │- SMS     │ │- ML     │   │
-│ │- Moderation││- Push   │ │- Insights│  │
-│ └─────────┘  └─────────┘  └─────────┘   │
-└─────────────────────────────────────────┘
-                        │
-                        ▼
-┌─────────────────────────────────────────┐
-│               Data Layer                │
-│                                         │
-│ ┌─────────┐  ┌─────────┐  ┌─────────┐   │
-│ │PostgreSQL│  │Elasticsearch│ │Redis  │   │
-│ │         │  │            │  │       │   │
-│ │- Hotels │  │- Search    │  │- Cache│   │
-│ │- Bookings│  │- Analytics │  │- Session│  │
-│ │- Users  │  │- Logs      │  │- Inventory│ │
-│ └─────────┘  └─────────┘  └─────────┘   │
-└─────────────────────────────────────────┘
-```
-
-### Key Components:
-- **Search Service**: Hotel discovery, filtering, ranking algorithms
-- **Booking Service**: Reservation management, booking lifecycle
-- **Inventory Service**: Room availability, real-time updates, blocking
-- **Pricing Service**: Dynamic pricing, demand-based rates
-- **Payment Service**: Multi-currency payments, refunds
-
----
-
-## Phase 4: Database Design (8 minutes)
-
-### Core Entities:
-- Hotels, Rooms, Bookings, Users, Reviews, Pricing
-
-### PostgreSQL Schema:
 ```sql
--- Hotels master data
+-- ============================================================================
+-- TABLE: hotels
+-- WHY: Top-level entity representing a physical hotel property.
+-- Every other entity (rooms, bookings, reviews) traces back here.
+-- ============================================================================
 CREATE TABLE hotels (
     hotel_id UUID PRIMARY KEY,
     hotel_name VARCHAR(300) NOT NULL,
-    chain_id UUID,                    -- Marriott, Hilton, etc.
-    
-    -- Location information
-    address JSONB NOT NULL,
     city VARCHAR(100) NOT NULL,
     country VARCHAR(50) NOT NULL,
+    address TEXT NOT NULL,
     latitude DECIMAL(10, 8),
     longitude DECIMAL(11, 8),
-    
-    -- Hotel details
-    star_rating INTEGER CHECK (star_rating >= 1 AND star_rating <= 5),
-    hotel_type VARCHAR(50),           -- business, resort, boutique
-    amenities TEXT[],                 -- pool, gym, spa, wifi
-    description TEXT,
-    
-    -- Business information
+    star_rating INTEGER CHECK (star_rating BETWEEN 1 AND 5),
+    amenities TEXT[],                       -- {pool, gym, spa, wifi, parking}
     check_in_time TIME DEFAULT '15:00',
     check_out_time TIME DEFAULT '11:00',
-    cancellation_policy JSONB,
-    
-    -- Performance metrics
+    cancellation_policy VARCHAR(20) DEFAULT 'FLEXIBLE',
+    -- FLEXIBLE: Free cancel 24hr before | MODERATE: 3 days | STRICT: Non-refundable
     average_rating DECIMAL(3,2) DEFAULT 0,
     total_reviews INTEGER DEFAULT 0,
-    
-    -- Status
-    hotel_status VARCHAR(20) DEFAULT 'active',
-    created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW(),
-    
-    INDEX idx_hotels_location (city, country),
-    INDEX idx_hotels_rating (average_rating DESC),
-    INDEX idx_hotels_geolocation USING GIST (POINT(longitude, latitude))
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT NOW()
 );
 
--- Room types and inventory
+CREATE INDEX idx_hotels_city ON hotels(city, is_active);
+CREATE INDEX idx_hotels_rating ON hotels(average_rating DESC) WHERE is_active = true;
+
+-- ============================================================================
+-- TABLE: room_types
+-- WHY: A hotel has multiple room TYPES (Deluxe King, Standard Twin, Suite).
+--      Separated from hotels because:
+--      1. One hotel has 5-20 room types — this is a 1-to-Many relationship
+--      2. Each type has different pricing, capacity, amenities
+--      3. Inventory is tracked per room type, not per individual room
+--         (unlike a ticket system where each seat is unique)
+--
+-- WHY NOT track individual rooms (Room 101, Room 102)?
+--   Hotels don't sell specific rooms — they sell ROOM TYPES.
+--   "Deluxe King, 3 available" is how hotels work. Individual room
+--   assignment happens at check-in (hotel's internal system, not ours).
+-- ============================================================================
 CREATE TABLE room_types (
     room_type_id UUID PRIMARY KEY,
-    hotel_id UUID REFERENCES hotels(hotel_id),
-    
-    -- Room details
-    room_name VARCHAR(200) NOT NULL,   -- Deluxe King, Standard Twin
-    room_size INTEGER,                 -- in sq ft
-    bed_type VARCHAR(50),             -- king, queen, twin, sofa
-    max_occupancy INTEGER DEFAULT 2,
-    
-    -- Amenities
-    amenities TEXT[],                 -- mini-bar, balcony, sea-view
-    
-    -- Pricing
+    hotel_id UUID NOT NULL REFERENCES hotels(hotel_id),
+    room_name VARCHAR(200) NOT NULL,        -- "Deluxe King", "Standard Twin"
+    bed_type VARCHAR(50) NOT NULL,          -- KING, QUEEN, TWIN, SOFA
+    max_occupancy INTEGER NOT NULL DEFAULT 2,
+    room_size_sqft INTEGER,
+    amenities TEXT[],                       -- {minibar, balcony, sea_view}
     base_price_per_night DECIMAL(10,2) NOT NULL,
-    currency VARCHAR(3) DEFAULT 'USD',
-    
-    -- Inventory
-    total_rooms INTEGER NOT NULL,
-    
-    created_at TIMESTAMP DEFAULT NOW(),
-    INDEX idx_room_types_hotel (hotel_id)
+    total_rooms INTEGER NOT NULL,           -- How many rooms of this type exist
+    created_at TIMESTAMP DEFAULT NOW()
 );
 
--- Room inventory and availability
+CREATE INDEX idx_room_types_hotel ON room_types(hotel_id);
+
+-- ============================================================================
+-- TABLE: room_inventory
+-- WHY: This is the KEY table for availability and pricing.
+--      Each row = "Room Type X has Y rooms available on Date Z at Price P".
+--
+--      WHY PER-DATE rows instead of a single total_rooms count?
+--        Because availability varies BY DATE:
+--        - Jan 15: 8 rooms available (low season)
+--        - Feb 14: 0 rooms available (Valentine's Day sold out)
+--        - Mar 1: 5 rooms available (some bookings)
+--        A single count can't represent this. We need one row per date.
+--
+--      WHY store price per date?
+--        Dynamic pricing: same room costs $100 on Tuesday, $200 on Saturday,
+--        $500 on New Year's Eve. Price is a function of date + demand.
+--
+-- RELATIONSHIP: room_inventory → room_types (Many-to-One)
+--   Each room type has 365 inventory rows (one per day of the year).
+--   This lets us answer "how many Deluxe Kings are available on March 15?"
+-- ============================================================================
 CREATE TABLE room_inventory (
     inventory_id UUID PRIMARY KEY,
-    room_type_id UUID REFERENCES room_types(room_type_id),
-    
-    -- Date-specific availability
-    availability_date DATE NOT NULL,
-    available_rooms INTEGER NOT NULL,
-    base_price DECIMAL(10,2) NOT NULL,
-    
-    -- Dynamic pricing
-    demand_multiplier DECIMAL(4,2) DEFAULT 1.00,
-    final_price DECIMAL(10,2) GENERATED ALWAYS AS (base_price * demand_multiplier) STORED,
-    
-    -- Booking restrictions
+    room_type_id UUID NOT NULL REFERENCES room_types(room_type_id),
+    inventory_date DATE NOT NULL,
+    total_rooms INTEGER NOT NULL,           -- Total rooms of this type
+    available_rooms INTEGER NOT NULL,       -- How many are available
+    price_per_night DECIMAL(10,2) NOT NULL, -- Price for THIS specific date
+    demand_multiplier DECIMAL(4,2) DEFAULT 1.00, -- Surge pricing factor
     min_stay_nights INTEGER DEFAULT 1,
-    max_stay_nights INTEGER DEFAULT 30,
+    is_blocked BOOLEAN DEFAULT false,       -- Hotel blocked this date (maintenance)
     
-    last_updated TIMESTAMP DEFAULT NOW(),
+    -- UNIQUE: One inventory record per room type per date.
+    -- WHY? Without this, we could accidentally create duplicate inventory,
+    -- leading to phantom availability or double-counted rooms.
+    UNIQUE(room_type_id, inventory_date),
     
-    UNIQUE(room_type_id, availability_date),
-    INDEX idx_inventory_date_hotel (room_type_id, availability_date),
-    INDEX idx_inventory_availability (availability_date, available_rooms)
+    -- Version for optimistic locking (prevents race conditions on booking)
+    version INTEGER DEFAULT 0
 );
 
--- Bookings
+-- WHY this index? The #1 query: "Find available rooms for date range"
+-- This composite index directly serves that query.
+CREATE INDEX idx_inventory_date_avail ON room_inventory(room_type_id, inventory_date)
+    WHERE available_rooms > 0 AND is_blocked = false;
+
+-- ============================================================================
+-- TABLE: bookings
+-- WHY: Records every reservation. Ties user, hotel, room type, dates together.
+--
+-- WHY store room_rate_per_night AND total_amount?
+--   Price snapshotting. If the hotel changes prices after booking, the
+--   user pays what they agreed to at booking time.
+-- ============================================================================
 CREATE TABLE bookings (
     booking_id UUID PRIMARY KEY,
     user_id UUID NOT NULL,
-    hotel_id UUID REFERENCES hotels(hotel_id),
-    room_type_id UUID REFERENCES room_types(room_type_id),
+    hotel_id UUID NOT NULL REFERENCES hotels(hotel_id),
+    room_type_id UUID NOT NULL REFERENCES room_types(room_type_id),
+    booking_reference VARCHAR(20) UNIQUE NOT NULL,
     
-    -- Booking details
     check_in_date DATE NOT NULL,
     check_out_date DATE NOT NULL,
-    nights INTEGER GENERATED ALWAYS AS (check_out_date - check_in_date) STORED,
+    nights INTEGER NOT NULL,
     rooms_booked INTEGER DEFAULT 1,
     guests INTEGER DEFAULT 2,
     
-    -- Pricing
+    -- Price snapshot at booking time
     room_rate_per_night DECIMAL(10,2) NOT NULL,
-    total_room_cost DECIMAL(12,2),
-    taxes_and_fees DECIMAL(10,2) DEFAULT 0,
-    total_amount DECIMAL(12,2),
-    currency VARCHAR(3) DEFAULT 'USD',
+    total_room_cost DECIMAL(12,2) NOT NULL,
+    taxes DECIMAL(10,2) DEFAULT 0,
+    total_amount DECIMAL(12,2) NOT NULL,
     
-    -- Booking status
-    booking_status VARCHAR(20) DEFAULT 'confirmed', -- confirmed, cancelled, completed, no_show
-    booking_reference VARCHAR(20) UNIQUE NOT NULL,
+    booking_status VARCHAR(20) DEFAULT 'CONFIRMED',
+    -- CONFIRMED → CHECKED_IN → CHECKED_OUT
+    -- CONFIRMED → CANCELLED
+    -- CONFIRMED → NO_SHOW
     
-    -- Guest information
-    primary_guest_name VARCHAR(200) NOT NULL,
-    primary_guest_email VARCHAR(255),
-    primary_guest_phone VARCHAR(20),
+    guest_name VARCHAR(200) NOT NULL,
+    guest_email VARCHAR(255),
     special_requests TEXT,
     
-    -- Payment
-    payment_method VARCHAR(50),
-    payment_status VARCHAR(20) DEFAULT 'paid',
-    
-    -- Timing
-    booked_at TIMESTAMP DEFAULT NOW(),
+    confirmed_at TIMESTAMP DEFAULT NOW(),
     cancelled_at TIMESTAMP,
     
-    created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW(),
-    
-    INDEX idx_bookings_user (user_id, booked_at DESC),
-    INDEX idx_bookings_hotel_dates (hotel_id, check_in_date, check_out_date),
-    INDEX idx_bookings_reference (booking_reference),
-    INDEX idx_bookings_status (booking_status, booked_at)
+    created_at TIMESTAMP DEFAULT NOW()
 );
 
--- User reviews and ratings
+CREATE INDEX idx_bookings_user ON bookings(user_id, created_at DESC);
+CREATE INDEX idx_bookings_hotel_dates ON bookings(hotel_id, check_in_date, check_out_date);
+
+-- ============================================================================
+-- TABLE: reviews
+-- WHY: Separate from bookings because:
+--      1. Not all bookings have reviews (optional, async)
+--      2. Reviews have their own lifecycle (pending moderation → published)
+--      3. Query pattern differs: "show all reviews for hotel X" doesn't need booking data
+--
+-- RELATIONSHIP: reviews → bookings (One-to-One)
+--   WHY FK to bookings? Only guests who actually stayed can review.
+--   This prevents fake reviews (no booking = no review).
+-- ============================================================================
 CREATE TABLE reviews (
     review_id UUID PRIMARY KEY,
-    booking_id UUID REFERENCES bookings(booking_id),
+    booking_id UUID UNIQUE REFERENCES bookings(booking_id),  -- UNIQUE = One-to-One
     user_id UUID NOT NULL,
-    hotel_id UUID REFERENCES hotels(hotel_id),
-    
-    -- Rating breakdown
-    overall_rating INTEGER CHECK (overall_rating >= 1 AND overall_rating <= 5),
-    cleanliness_rating INTEGER CHECK (cleanliness_rating >= 1 AND cleanliness_rating <= 5),
-    service_rating INTEGER CHECK (service_rating >= 1 AND service_rating <= 5),
-    location_rating INTEGER CHECK (location_rating >= 1 AND location_rating <= 5),
-    value_rating INTEGER CHECK (value_rating >= 1 AND value_rating <= 5),
-    
-    -- Review content
-    review_title VARCHAR(500),
+    hotel_id UUID NOT NULL REFERENCES hotels(hotel_id),
+    overall_rating INTEGER CHECK (overall_rating BETWEEN 1 AND 5),
+    cleanliness INTEGER CHECK (cleanliness BETWEEN 1 AND 5),
+    service INTEGER CHECK (service BETWEEN 1 AND 5),
+    location INTEGER CHECK (location BETWEEN 1 AND 5),
+    value INTEGER CHECK (value BETWEEN 1 AND 5),
     review_text TEXT,
-    
-    -- Review metadata
-    is_verified_stay BOOLEAN DEFAULT true,
-    review_status VARCHAR(20) DEFAULT 'published', -- published, pending, rejected
-    helpful_votes INTEGER DEFAULT 0,
-    
-    created_at TIMESTAMP DEFAULT NOW(),
-    
-    INDEX idx_reviews_hotel (hotel_id, created_at DESC),
-    INDEX idx_reviews_user (user_id, created_at DESC),
-    INDEX idx_reviews_rating (overall_rating, created_at DESC)
+    is_verified BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT NOW()
 );
+
+CREATE INDEX idx_reviews_hotel ON reviews(hotel_id, created_at DESC);
 ```
-
-### Redis Cache Strategy:
-```javascript
-// Hotel search cache
-"search_results:{city}:{checkin}:{checkout}:{filters_hash}": {
-  "hotels": [
-    {"hotel_id": "uuid", "name": "Grand Hotel", "price": 150, "rating": 4.5},
-    {"hotel_id": "uuid", "name": "City Inn", "price": 80, "rating": 4.2}
-  ],
-  "total_results": 245,
-  "cached_at": 1704110400,
-  "ttl": 900  // 15 minutes
-}
-
-// Room availability cache
-"room_availability:{hotel_id}:{date_range}": {
-  "room_types": [
-    {"room_type_id": "uuid", "available": 5, "price": 150},
-    {"room_type_id": "uuid", "available": 2, "price": 200}
-  ],
-  "last_updated": 1704110400,
-  "ttl": 300  // 5 minutes
-}
-
-// Hotel details cache
-"hotel_details:{hotel_id}": {
-  "name": "Grand Hotel",
-  "location": {"city": "NYC", "country": "USA"},
-  "amenities": ["pool", "gym", "spa"],
-  "average_rating": 4.5,
-  "total_reviews": 1250,
-  "ttl": 3600  // 1 hour
-}
-
-// User session and booking state
-"booking_session:{session_id}": {
-  "user_id": "uuid",
-  "hotel_id": "uuid",
-  "room_type_id": "uuid",
-  "check_in": "2024-06-15",
-  "check_out": "2024-06-18",
-  "total_price": 450.00,
-  "expires_at": 1704111900,
-  "ttl": 1800  // 30 minutes
-}
-```
-
-### Design Decisions:
-- **Date-based inventory**: Flexible room availability and pricing
-- **Normalized reviews**: Detailed rating breakdown for better insights
-- **Booking reference**: Human-readable booking codes
-- **Multi-currency support**: Global platform requirements
 
 ---
 
-## Phase 5: Critical Flow - Hotel Search & Booking (8 minutes)
+## Design Patterns & SOLID
 
-### Most Critical Flow: User Searches and Books Hotel
+| Pattern | Where | Why |
+|---------|-------|-----|
+| **Strategy** | PricingStrategy (Seasonal, Demand, Weekend) | Different hotels price differently. Swap algorithms without changing booking logic. |
+| **Template Method** | BookingWorkflow | Steps are always: validate → check inventory → calculate → reserve → confirm. Subclasses customize steps. |
+| **Observer** | BookingEventObserver | Notify email, analytics, inventory sync on booking events. |
+| **Builder** | Booking.Builder | Many fields, some optional (special requests, discount). Builder keeps construction clean. |
 
-**1. Hotel Search Request**
-```
-User searches for hotels:
-GET /api/hotels/search?city=NYC&checkin=2024-06-15&checkout=2024-06-18&guests=2
-
-Parameters processed:
-- Location: City, coordinates, landmarks
-- Dates: Check-in/out with validation
-- Occupancy: Guests, rooms needed
-- Filters: Price range, rating, amenities
-```
-
-**2. Search Processing**
-```
-Search Service processing:
-1. Validate search parameters and dates
-2. Generate cache key from search parameters
-3. Check Redis cache for existing results
-4. If cache miss:
-   - Query Elasticsearch for hotels in location
-   - Filter by availability for date range
-   - Apply user filters (price, rating, amenities)
-   - Sort by relevance, price, or rating
-   - Cache results with 15-minute TTL
-5. Return paginated hotel list with pricing
-```
-
-**3. Room Availability Check**
-```
-When user clicks on hotel:
-1. Query room_inventory for specific dates
-2. Check available_rooms > 0 for each night
-3. Calculate dynamic pricing based on:
-   - Base price from room_types
-   - Demand multiplier from inventory
-   - Seasonal adjustments
-   - Special offers/discounts
-4. Return available room types with final pricing
-```
-
-**4. Booking Reservation**
-```
-User proceeds with booking:
-1. Create booking session in Redis (30-minute hold)
-2. Validate inventory still available
-3. Calculate total pricing with taxes and fees
-4. Process payment through Payment Service
-5. If payment successful:
-   - Create booking record in database
-   - Update room_inventory (decrement available_rooms)
-   - Generate unique booking reference
-   - Send confirmation email
-6. If payment fails:
-   - Release inventory hold
-   - Return error with retry option
-```
-
-**5. Inventory Management**
-```
-Real-time inventory updates:
-1. Background jobs sync with hotel PMS systems
-2. Handle overbooking scenarios with waitlists
-3. Automatic inventory blocks for maintenance
-4. Dynamic pricing updates based on demand
-5. Cancellation processing and inventory release
-```
-
-### Technical Challenges:
-
-**Search Performance:**
-- "Elasticsearch with geospatial queries for location-based search"
-- "Multi-layered caching (CDN, Redis, database) for hot data"
-- "Precomputed availability aggregates for popular routes"
-
-**Inventory Consistency:**
-- "Optimistic locking to prevent double bookings"
-- "Real-time inventory updates from hotel systems"
-- "Compensation logic for oversold situations"
-
-**Global Scale:**
-- "Multi-region deployment with data locality"
-- "CDN for static content (images, descriptions)"
-- "Database sharding by geographic region"
-
-**Dynamic Pricing:**
-- "Real-time price calculation based on demand"
-- "Machine learning for demand forecasting"
-- "A/B testing for pricing strategies"
+| SOLID | How |
+|-------|-----|
+| **S** | `InventoryService` manages room counts only. `PricingService` calculates prices only. `BookingService` orchestrates. |
+| **O** | New pricing formula = new `PricingStrategy` class. No changes to `BookingService`. |
+| **L** | Any `PricingStrategy` (Seasonal, Weekend, Demand) is interchangeable. |
+| **I** | `PricingStrategy` has one method. `AvailabilityChecker` has one method. Focused contracts. |
+| **D** | `BookingService` depends on `PricingStrategy` interface, not `SeasonalPricing` class. |
 
 ---
 
-## Phase 6: Scaling & Bottlenecks (2 minutes)
+## Code Implementation
 
-### Main Bottlenecks:
-1. **Search latency**: Complex queries with filters across large datasets
-2. **Inventory contention**: Multiple users booking same rooms
-3. **Database load**: High read/write volume during peak seasons
-4. **Image delivery**: Large media files affecting page load times
+### Enums & Models
 
-### Scaling Solutions:
+```java
+public enum BookingStatus {
+    CONFIRMED, CHECKED_IN, CHECKED_OUT, CANCELLED, NO_SHOW;
+    
+    public boolean canTransitionTo(BookingStatus next) {
+        return switch (this) {
+            case CONFIRMED -> next == CHECKED_IN || next == CANCELLED;
+            case CHECKED_IN -> next == CHECKED_OUT;
+            case CHECKED_OUT, CANCELLED, NO_SHOW -> false;
+        };
+    }
+}
 
-**Search Optimization:**
-```
-- Elasticsearch clusters: Distributed search across regions
-- Search result caching: Redis with intelligent cache warming
-- Index optimization: Separate indexes for availability vs details
-- CDN integration: Cache popular search results at edge
+public enum CancellationPolicy {
+    FLEXIBLE(1),      // Free cancel up to 1 day before
+    MODERATE(3),      // Free cancel up to 3 days before
+    STRICT(0);        // Non-refundable (0 = no free cancellation)
+    
+    private final int freeCancelDaysBefore;
+    CancellationPolicy(int days) { this.freeCancelDaysBefore = days; }
+    
+    /**
+     * Calculate refund percentage based on when cancellation happens.
+     * WHY here? Cancellation logic is tied to the policy type.
+     * Encapsulating it in the enum avoids if-else chains elsewhere.
+     */
+    public BigDecimal getRefundPercentage(LocalDate checkInDate) {
+        long daysUntilCheckIn = ChronoUnit.DAYS.between(LocalDate.now(), checkInDate);
+        if (daysUntilCheckIn >= freeCancelDaysBefore) {
+            return BigDecimal.ONE; // 100% refund
+        }
+        return switch (this) {
+            case FLEXIBLE -> new BigDecimal("0.50");  // 50% if late cancel
+            case MODERATE -> new BigDecimal("0.25");   // 25% if late cancel
+            case STRICT -> BigDecimal.ZERO;            // No refund
+        };
+    }
+}
+
+// ============================================================================
+// MODEL: DateRange (Value Object)
+// WHY a value object? Check-in and check-out dates always travel together.
+// Immutable. Validates that checkout > checkin at construction.
+// ============================================================================
+public record DateRange(LocalDate checkIn, LocalDate checkOut) {
+    public DateRange {
+        if (!checkOut.isAfter(checkIn)) {
+            throw new IllegalArgumentException("Check-out must be after check-in");
+        }
+    }
+    
+    public int nights() {
+        return (int) ChronoUnit.DAYS.between(checkIn, checkOut);
+    }
+    
+    public List<LocalDate> dates() {
+        return checkIn.datesUntil(checkOut).collect(Collectors.toList());
+    }
+}
+
+// ============================================================================
+// MODEL: RoomType — Represents a category of rooms in a hotel.
+// ============================================================================
+public class RoomType {
+    private final String roomTypeId;
+    private final String hotelId;
+    private final String roomName;
+    private final int maxOccupancy;
+    private final BigDecimal basePricePerNight;
+    private final int totalRooms;
+
+    public RoomType(String roomTypeId, String hotelId, String roomName,
+                    int maxOccupancy, BigDecimal basePricePerNight, int totalRooms) {
+        this.roomTypeId = roomTypeId;
+        this.hotelId = hotelId;
+        this.roomName = roomName;
+        this.maxOccupancy = maxOccupancy;
+        this.basePricePerNight = basePricePerNight;
+        this.totalRooms = totalRooms;
+    }
+
+    // Getters
+    public String getRoomTypeId() { return roomTypeId; }
+    public String getHotelId() { return hotelId; }
+    public String getRoomName() { return roomName; }
+    public int getMaxOccupancy() { return maxOccupancy; }
+    public BigDecimal getBasePricePerNight() { return basePricePerNight; }
+    public int getTotalRooms() { return totalRooms; }
+}
+
+// ============================================================================
+// MODEL: Booking — With state machine for lifecycle management.
+// PATTERN: State — transitions validated inside the model.
+// PATTERN: Builder — for clean construction.
+// ============================================================================
+public class Booking {
+    private final String bookingId;
+    private final String userId;
+    private final String hotelId;
+    private final String roomTypeId;
+    private final String bookingReference;
+    private final DateRange dateRange;
+    private final int roomsBooked;
+    private final BigDecimal ratePerNight;
+    private final BigDecimal totalAmount;
+    private final String guestName;
+    
+    private BookingStatus status;
+
+    private Booking(Builder builder) {
+        this.bookingId = builder.bookingId;
+        this.userId = builder.userId;
+        this.hotelId = builder.hotelId;
+        this.roomTypeId = builder.roomTypeId;
+        this.bookingReference = builder.bookingReference;
+        this.dateRange = builder.dateRange;
+        this.roomsBooked = builder.roomsBooked;
+        this.ratePerNight = builder.ratePerNight;
+        this.totalAmount = builder.totalAmount;
+        this.guestName = builder.guestName;
+        this.status = BookingStatus.CONFIRMED;
+    }
+
+    public void cancel() {
+        if (!status.canTransitionTo(BookingStatus.CANCELLED)) {
+            throw new IllegalStateException("Cannot cancel a " + status + " booking");
+        }
+        this.status = BookingStatus.CANCELLED;
+    }
+
+    public void checkIn() {
+        if (!status.canTransitionTo(BookingStatus.CHECKED_IN)) {
+            throw new IllegalStateException("Cannot check in from " + status);
+        }
+        this.status = BookingStatus.CHECKED_IN;
+    }
+
+    // Getters
+    public String getBookingId() { return bookingId; }
+    public String getRoomTypeId() { return roomTypeId; }
+    public DateRange getDateRange() { return dateRange; }
+    public int getRoomsBooked() { return roomsBooked; }
+    public BigDecimal getTotalAmount() { return totalAmount; }
+    public BookingStatus getStatus() { return status; }
+
+    // Builder
+    public static class Builder {
+        private String bookingId, userId, hotelId, roomTypeId, bookingReference, guestName;
+        private DateRange dateRange;
+        private int roomsBooked = 1;
+        private BigDecimal ratePerNight, totalAmount;
+
+        public Builder bookingId(String id) { this.bookingId = id; return this; }
+        public Builder userId(String id) { this.userId = id; return this; }
+        public Builder hotelId(String id) { this.hotelId = id; return this; }
+        public Builder roomTypeId(String id) { this.roomTypeId = id; return this; }
+        public Builder bookingReference(String ref) { this.bookingReference = ref; return this; }
+        public Builder dateRange(DateRange range) { this.dateRange = range; return this; }
+        public Builder roomsBooked(int n) { this.roomsBooked = n; return this; }
+        public Builder ratePerNight(BigDecimal rate) { this.ratePerNight = rate; return this; }
+        public Builder totalAmount(BigDecimal total) { this.totalAmount = total; return this; }
+        public Builder guestName(String name) { this.guestName = name; return this; }
+        
+        public Booking build() {
+            Objects.requireNonNull(bookingId);
+            Objects.requireNonNull(dateRange);
+            Objects.requireNonNull(roomTypeId);
+            return new Booking(this);
+        }
+    }
+
+    public static Builder builder() { return new Builder(); }
+}
 ```
 
-**Database Scaling:**
-```
-- Read replicas: Separate search queries from transactional operations
-- Horizontal sharding: Partition by geographic region or hotel chain
-- Connection pooling: Efficient database connection management
-- Materialized views: Precomputed aggregates for reporting
+### Strategy Implementations
+
+```java
+// ============================================================================
+// INTERFACE: PricingStrategy
+// PATTERN: Strategy — Different pricing models for different situations.
+// SOLID (I): One method. Clean contract.
+// ============================================================================
+public interface PricingStrategy {
+    BigDecimal calculateNightlyRate(RoomType roomType, LocalDate date, int occupancy);
+}
+
+public class StandardPricingStrategy implements PricingStrategy {
+    @Override
+    public BigDecimal calculateNightlyRate(RoomType roomType, LocalDate date, int occupancy) {
+        return roomType.getBasePricePerNight();
+    }
+}
+
+// ============================================================================
+// Seasonal pricing: weekends and holidays cost more.
+// Wraps a base strategy (Decorator-like composition).
+// ============================================================================
+public class SeasonalPricingStrategy implements PricingStrategy {
+    private final PricingStrategy baseStrategy;
+    private final Set<LocalDate> holidays;
+
+    public SeasonalPricingStrategy(PricingStrategy baseStrategy, Set<LocalDate> holidays) {
+        this.baseStrategy = baseStrategy;
+        this.holidays = holidays;
+    }
+
+    @Override
+    public BigDecimal calculateNightlyRate(RoomType roomType, LocalDate date, int occupancy) {
+        BigDecimal base = baseStrategy.calculateNightlyRate(roomType, date, occupancy);
+        BigDecimal multiplier = BigDecimal.ONE;
+
+        if (isWeekend(date)) {
+            multiplier = new BigDecimal("1.25"); // 25% weekend premium
+        }
+        if (holidays.contains(date)) {
+            multiplier = new BigDecimal("2.00"); // 100% holiday premium
+        }
+
+        return base.multiply(multiplier).setScale(2, RoundingMode.HALF_UP);
+    }
+
+    private boolean isWeekend(LocalDate date) {
+        DayOfWeek day = date.getDayOfWeek();
+        return day == DayOfWeek.FRIDAY || day == DayOfWeek.SATURDAY;
+    }
+}
 ```
 
-**Inventory Management:**
-```
-- Event-driven updates: Real-time inventory sync with hotel systems
-- Batch processing: Nightly inventory reconciliation jobs
-- Overbooking algorithms: Intelligent overselling with waitlists
-- Circuit breakers: Graceful degradation when hotel APIs fail
+### Core Services
+
+```java
+// ============================================================================
+// InventoryService — Manages room availability. Heart of the system.
+// SOLID (S): Only manages inventory counts. No pricing, no booking logic.
+//
+// The critical operation is reserveRooms() which uses OPTIMISTIC LOCKING
+// to prevent overbooking in concurrent scenarios.
+// ============================================================================
+public class InventoryService {
+
+    private final InventoryRepository inventoryRepository;
+
+    public InventoryService(InventoryRepository inventoryRepository) {
+        this.inventoryRepository = inventoryRepository;
+    }
+
+    /**
+     * Check if a room type has enough rooms for ALL dates in the range.
+     * A room type might have 5 rooms on Monday but 0 on Tuesday —
+     * the booking fails because Tuesday has no availability.
+     */
+    public boolean isAvailable(String roomTypeId, DateRange dateRange, int roomsNeeded) {
+        for (LocalDate date : dateRange.dates()) {
+            int available = inventoryRepository.getAvailableRooms(roomTypeId, date);
+            if (available < roomsNeeded) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Reserve rooms across all dates in the range.
+     * Uses optimistic locking: read version → decrement → write with version check.
+     * If version changed, someone else booked in between → retry or fail.
+     *
+     * WHY optimistic over pessimistic? Hotel bookings have LOW contention
+     * (unlike concert tickets). Most of the time, no two people book the
+     * same room type on the same date simultaneously.
+     */
+    @Transactional
+    public void reserveRooms(String roomTypeId, DateRange dateRange, int roomsToReserve) {
+        for (LocalDate date : dateRange.dates()) {
+            RoomInventory inventory = inventoryRepository
+                .findByRoomTypeAndDate(roomTypeId, date)
+                .orElseThrow(() -> new InventoryNotFoundException(
+                    "No inventory for " + roomTypeId + " on " + date));
+
+            if (inventory.getAvailableRooms() < roomsToReserve) {
+                throw new InsufficientInventoryException(
+                    "Only " + inventory.getAvailableRooms() + " rooms on " + date);
+            }
+
+            // Optimistic lock: update only if version matches
+            int updated = inventoryRepository.decrementAvailable(
+                inventory.getInventoryId(),
+                roomsToReserve,
+                inventory.getVersion()  // WHERE version = ?
+            );
+
+            if (updated == 0) {
+                throw new ConcurrentBookingException(
+                    "Room was booked by someone else. Please try again.");
+            }
+        }
+    }
+
+    /** Release rooms back to inventory (on cancellation). */
+    @Transactional
+    public void releaseRooms(String roomTypeId, DateRange dateRange, int roomsToRelease) {
+        for (LocalDate date : dateRange.dates()) {
+            inventoryRepository.incrementAvailable(roomTypeId, date, roomsToRelease);
+        }
+    }
+}
+
+// ============================================================================
+// BookingService — Orchestrates the booking flow.
+// SOLID (S): Orchestrates. Delegates inventory to InventoryService,
+//   pricing to PricingStrategy.
+// SOLID (D): Depends on interfaces for inventory and pricing.
+// ============================================================================
+public class BookingService {
+
+    private final InventoryService inventoryService;
+    private final PricingStrategy pricingStrategy;
+    private final BookingRepository bookingRepository;
+    private final List<BookingEventObserver> observers;
+
+    public BookingService(InventoryService inventoryService,
+                          PricingStrategy pricingStrategy,
+                          BookingRepository bookingRepository) {
+        this.inventoryService = inventoryService;
+        this.pricingStrategy = pricingStrategy;
+        this.bookingRepository = bookingRepository;
+        this.observers = new ArrayList<>();
+    }
+
+    public void addObserver(BookingEventObserver observer) {
+        observers.add(observer);
+    }
+
+    /**
+     * Book rooms for a date range.
+     * FLOW: Validate → Check availability → Calculate price → Reserve → Save
+     */
+    public Booking createBooking(String userId, String hotelId, String roomTypeId,
+                                  DateRange dateRange, int rooms, String guestName) {
+        // 1. Check availability for ALL dates
+        if (!inventoryService.isAvailable(roomTypeId, dateRange, rooms)) {
+            throw new RoomNotAvailableException("Insufficient rooms for selected dates");
+        }
+
+        // 2. Calculate total price using pricing strategy
+        RoomType roomType = roomTypeRepository.findById(roomTypeId).orElseThrow();
+        BigDecimal totalAmount = BigDecimal.ZERO;
+        for (LocalDate date : dateRange.dates()) {
+            BigDecimal nightRate = pricingStrategy.calculateNightlyRate(
+                roomType, date, 2);
+            totalAmount = totalAmount.add(nightRate.multiply(BigDecimal.valueOf(rooms)));
+        }
+
+        // 3. Reserve rooms in inventory (optimistic locking inside)
+        inventoryService.reserveRooms(roomTypeId, dateRange, rooms);
+
+        // 4. Create booking
+        Booking booking = Booking.builder()
+            .bookingId(UUID.randomUUID().toString())
+            .userId(userId)
+            .hotelId(hotelId)
+            .roomTypeId(roomTypeId)
+            .bookingReference(generateReference())
+            .dateRange(dateRange)
+            .roomsBooked(rooms)
+            .ratePerNight(roomType.getBasePricePerNight())
+            .totalAmount(totalAmount)
+            .guestName(guestName)
+            .build();
+
+        bookingRepository.save(booking);
+        notifyObservers(booking, "BOOKING_CONFIRMED");
+
+        return booking;
+    }
+
+    public Booking cancelBooking(String bookingId, String userId) {
+        Booking booking = bookingRepository.findById(bookingId).orElseThrow();
+        booking.cancel();
+        
+        // Release inventory
+        inventoryService.releaseRooms(
+            booking.getRoomTypeId(), booking.getDateRange(), booking.getRoomsBooked());
+        
+        bookingRepository.save(booking);
+        notifyObservers(booking, "BOOKING_CANCELLED");
+        return booking;
+    }
+
+    private String generateReference() {
+        return "BK-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+    }
+
+    private void notifyObservers(Booking booking, String event) {
+        for (BookingEventObserver obs : observers) {
+            obs.onBookingEvent(booking, event);
+        }
+    }
+}
 ```
 
-**Global Performance:**
-```
-- Multi-region deployment: Data centers in major markets
-- Content delivery: Images and static assets via CDN
-- Currency/language: Localized content and pricing
-- Edge caching: Hotel data cached at geographic edges
-```
+### Observer Pattern
 
-### Trade-offs:
-- **Search Accuracy vs Speed**: Real-time availability vs cached results
-- **Consistency vs Availability**: Strong inventory consistency vs system uptime
-- **Personalization vs Privacy**: User tracking for recommendations vs data protection
+```java
+public interface BookingEventObserver {
+    void onBookingEvent(Booking booking, String event);
+}
+
+public class EmailNotificationObserver implements BookingEventObserver {
+    @Override
+    public void onBookingEvent(Booking booking, String event) {
+        switch (event) {
+            case "BOOKING_CONFIRMED" -> System.out.println(
+                "📧 Confirmation email sent to guest for booking " + booking.getBookingId());
+            case "BOOKING_CANCELLED" -> System.out.println(
+                "📧 Cancellation email sent with refund details");
+        }
+    }
+}
+
+public class AnalyticsObserver implements BookingEventObserver {
+    @Override
+    public void onBookingEvent(Booking booking, String event) {
+        System.out.println("📊 Analytics tracked: " + event + 
+            " | amount: " + booking.getTotalAmount());
+    }
+}
+```
 
 ---
 
-## Advanced Features:
+## Edge Cases & Tests
 
-**Machine Learning:**
-- Demand forecasting for dynamic pricing
-- Personalized hotel recommendations
-- Fraud detection for bookings and reviews
-- Revenue optimization algorithms
+```java
+// 1. Booking a room type that's fully booked on one of the dates
+@Test
+void booking_partiallyAvailable_fails() {
+    // Available on Jan 15 and 16, but NOT on Jan 17
+    assertThrows(RoomNotAvailableException.class, () ->
+        bookingService.createBooking("user-1", "hotel-1", "deluxe-king",
+            new DateRange(LocalDate.of(2026, 1, 15), LocalDate.of(2026, 1, 18)),
+            1, "John"));
+}
 
-**Business Intelligence:**
-- Real-time analytics dashboard
-- Booking pattern analysis
-- Competitive pricing intelligence
-- Customer lifetime value tracking
+// 2. Two users try to book the last room simultaneously
+@Test
+void concurrentBooking_lastRoom_oneSucceeds() throws Exception {
+    // Only 1 Deluxe King room left on Jan 15
+    ExecutorService executor = Executors.newFixedThreadPool(2);
+    
+    Future<?> user1 = executor.submit(() ->
+        bookingService.createBooking("u1", "h1", "dk", range, 1, "User1"));
+    Future<?> user2 = executor.submit(() ->
+        bookingService.createBooking("u2", "h1", "dk", range, 1, "User2"));
+    
+    int success = 0, failure = 0;
+    try { user1.get(); success++; } catch (Exception e) { failure++; }
+    try { user2.get(); success++; } catch (Exception e) { failure++; }
+    
+    assertEquals(1, success);
+    assertEquals(1, failure);
+}
+
+// 3. Cancellation releases inventory
+@Test
+void cancelBooking_releasesInventory() {
+    Booking booking = bookingService.createBooking("u1", "h1", "dk", range, 1, "John");
+    int availableBefore = inventoryService.getAvailable("dk", range.checkIn());
+    
+    bookingService.cancelBooking(booking.getBookingId(), "u1");
+    
+    int availableAfter = inventoryService.getAvailable("dk", range.checkIn());
+    assertEquals(availableBefore + 1, availableAfter);
+}
+
+// 4. Weekend pricing applies correctly
+@Test
+void pricing_weekend_appliesMultiplier() {
+    LocalDate saturday = LocalDate.of(2026, 2, 7); // Saturday
+    BigDecimal weekendRate = pricingStrategy.calculateNightlyRate(roomType, saturday, 2);
+    BigDecimal weekdayRate = pricingStrategy.calculateNightlyRate(roomType, saturday.minusDays(1), 2);
+    assertTrue(weekendRate.compareTo(weekdayRate) > 0);
+}
+
+// 5. Check-out must be after check-in
+@Test
+void dateRange_invalidDates_throwsException() {
+    assertThrows(IllegalArgumentException.class, () ->
+        new DateRange(LocalDate.of(2026, 1, 20), LocalDate.of(2026, 1, 15)));
+}
+```
 
 ---
 
-## Success Metrics:
-- **Search Performance**: <200ms hotel search response time
-- **Booking Conversion**: >3% search-to-booking conversion rate
-- **Inventory Accuracy**: >99.9% availability accuracy
-- **System Uptime**: 99.99% availability during peak travel periods
-- **Customer Satisfaction**: >4.5 average booking rating
+## Summary
 
-**🎯 This design demonstrates travel industry expertise, inventory management, search optimization, and building global platforms handling complex business logic with high availability requirements.**
-
-
-
-
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  KEY DESIGN DECISIONS                                           │
+│                                                                 │
+│  1. room_inventory has PER-DATE rows (not per-room)            │
+│     → Enables date-specific pricing and availability           │
+│                                                                 │
+│  2. Optimistic locking on inventory prevents overbooking       │
+│     → Low contention makes this optimal vs pessimistic         │
+│                                                                 │
+│  3. Price snapshotting in bookings                             │
+│     → User pays agreed price even if hotel changes rates       │
+│                                                                 │
+│  PATTERNS: Strategy (pricing), Builder (booking), Observer,    │
+│            State Machine (booking status)                       │
+│  SOLID: S (services split), O (new pricing=new class),         │
+│         D (depend on interfaces)                               │
+└─────────────────────────────────────────────────────────────────┘
+```

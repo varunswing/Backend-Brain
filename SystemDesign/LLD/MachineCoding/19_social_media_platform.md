@@ -1,720 +1,877 @@
-# Social Media Platform (Facebook/Twitter) - System Design Interview
-
-## Problem Statement
-*"Design a social media platform like Facebook or Twitter that supports billions of users, real-time feeds, messaging, media sharing, and handles viral content with global distribution."*
+# Social Media Platform - LLD / Machine Coding Interview Study Document
 
 ---
 
-## Phase 1: Requirements Clarification (8 minutes)
+## 1. Problem Statement
 
-### Questions I Would Ask:
-
-**Functional Requirements:**
-- "What core features do we need?" → User profiles, posts, news feed, following/friends, likes/comments
-- "Should we support real-time messaging?" → Yes, direct messages and group chats
-- "Do we need media support?" → Yes, photos, videos, stories, live streaming
-- "What about notifications?" → Yes, real-time push notifications for interactions
-- "Should we have content discovery?" → Yes, trending topics, hashtags, search
-- "Do we need content moderation?" → Yes, spam detection, inappropriate content filtering
-
-**Non-Functional Requirements:**
-- "What's our user scale?" → 3B+ users globally, 1.5B daily active users
-- "Expected post volume?" → 500M posts/day, 10B interactions/day (likes, comments, shares)
-- "Real-time requirements?" → <100ms for feed loading, <1s for new post delivery
-- "Storage needs?" → Massive media storage, 10+ years of content history
-- "Global availability?" → 99.99% uptime, multi-region deployment
-- "Consistency requirements?" → Eventually consistent feeds, strong consistency for payments
-
-### Requirements Summary:
-- **Scale**: 3B users, 1.5B DAU, 500M posts/day, 10B interactions/day
-- **Features**: Profiles, feeds, messaging, media sharing, notifications, search
-- **Performance**: <100ms feed load, real-time notifications, viral content handling
-- **Global**: Multi-region with localized content and compliance
-- **Media**: Photos, videos, stories, live streaming with CDN distribution
+Design a social media platform (like Facebook/Twitter) that allows users to create posts, follow other users, like and comment on posts, and view a personalized feed. The system must support multiple feed algorithms (chronological, ranked, trending), real-time notifications, and handle fan-out strategies for feed distribution at scale.
 
 ---
 
-## Phase 2: Capacity Estimation (5 minutes)
+## 2. Requirements
 
-### User & Traffic Estimation:
-```
-Total users: 3B registered users
-Daily active users: 1.5B (50% of total)
-Concurrent users during peak: 200M
-Average session duration: 30 minutes
-Posts per user per day: 1 post (heavy users: 10, light users: 0.1)
-Feed refreshes per user per day: 20
-```
+### Functional Requirements
 
-### Content Volume:
-```
-Daily posts: 500M posts
-Daily media uploads: 2B photos, 100M videos
-Daily interactions: 10B (likes, comments, shares)
-Daily messages: 50B direct messages
-Storage per post: 2KB text + metadata
-Storage per photo: 1MB average
-Storage per video: 50MB average
-```
+| ID | Requirement | Description |
+|----|-------------|-------------|
+| FR1 | User Registration & Profile | Create account, update profile (bio, avatar) |
+| FR2 | Create Post | Create text, image, or video posts with optional tags, location, visibility |
+| FR3 | Follow/Unfollow | Follow other users; asymmetric relationship (A follows B ≠ B follows A) |
+| FR4 | Like/Unlike | Like a post; unlike removes like. Idempotent (double-like = single like) |
+| FR5 | Comment | Add comments on posts; nested replies optional |
+| FR6 | Feed | View personalized feed (chronological, ranked, or trending) |
+| FR7 | Notifications | Receive notifications for likes, comments, new followers |
+| FR8 | Post Visibility | PUBLIC, PRIVATE, FRIENDS_ONLY (visible only to followers) |
 
-### Storage Estimation:
-```
-User profiles: 3B × 2KB = 6TB
-Posts (text): 500M/day × 2KB × 365 × 5 = 1.8TB/year
-Photos: 2B/day × 1MB × 365 × 5 = 3.6PB/year
-Videos: 100M/day × 50MB × 365 × 5 = 9.1PB/year
-Social graph: 3B users × 500 connections × 100B = 150TB
-Total: ~13PB/year (with replication ~40PB/year)
-```
+### Non-Functional Requirements
 
-### Bandwidth Requirements:
-```
-Peak read requests: 200M users × 20 refreshes / 86,400s = 46K RPS
-Peak media bandwidth: 200M users × 10MB/session / 1800s = 1TB/s
-Video streaming: 50M concurrent streams × 2Mbps = 100Tbps
-Global CDN bandwidth: 500Tbps total capacity needed
-```
+| ID | Requirement | Target |
+|----|-------------|--------|
+| NFR1 | Latency | Feed load < 200ms (P95) |
+| NFR2 | Scalability | Support 10M+ users, 100M+ posts |
+| NFR3 | Availability | 99.9% uptime |
+| NFR4 | Extensibility | Easy to add new feed algorithms and post types |
+| NFR5 | Consistency | Like count eventually consistent; idempotent like/unlike |
 
 ---
 
-## Phase 3: High-Level Architecture (12 minutes)
-
-```
-┌─────────────┐  ┌─────────────┐  ┌─────────────┐
-│Mobile Apps  │  │Web Client   │  │Desktop Apps │
-│- iOS/Android│  │- React PWA  │  │- Electron   │
-│- Native UI  │  │- Real-time  │  │- Native     │
-└─────────────┘  └─────────────┘  └─────────────┘
-       │                │                │
-       └────────────────┼────────────────┘
-                        │
-                        ▼
-┌─────────────────────────────────────────────────┐
-│                Global CDN                       │
-│- Static assets  - Media content  - Edge caching│
-└─────────────────────────────────────────────────┘
-                        │
-                        ▼
-┌─────────────────────────────────────────────────┐
-│            Global Load Balancer                 │
-│- Geographic routing  - DDoS protection         │
-└─────────────────────────────────────────────────┘
-                        │
-        ┌───────────────┼───────────────┐
-        │               │               │
-        ▼               ▼               ▼
-┌──────────────┐ ┌──────────────┐ ┌──────────────┐
-│   Region 1   │ │   Region 2   │ │   Region 3   │
-│   (US-West)  │ │   (EU-West)  │ │  (AP-South)  │
-└──────────────┘ └──────────────┘ └──────────────┘
-        │
-        ▼
-┌─────────────────────────────────────────────────┐
-│              Regional API Gateway               │
-│- Authentication  - Rate limiting  - Routing    │
-└─────────────────────────────────────────────────┘
-                        │
-    ┌───────────────────┼───────────────────┐
-    │                   │                   │
-    ▼                   ▼                   ▼
-┌────────────┐ ┌────────────┐ ┌────────────┐
-│User        │ │Feed        │ │Post        │
-│Service     │ │Service     │ │Service     │
-│            │ │            │ │            │
-│- Profile   │ │- Timeline  │ │- Create    │
-│- Auth      │ │- Algorithm │ │- Media     │
-│- Friends   │ │- Ranking   │ │- Moderate  │
-└────────────┘ └────────────┘ └────────────┘
-    │                   │                   │
-    └───────────────────┼───────────────────┘
-                        │
-    ┌───────────────────┼───────────────────┐
-    │                   │                   │
-    ▼                   ▼                   ▼
-┌────────────┐ ┌────────────┐ ┌────────────┐
-│Social      │ │Messaging   │ │Notification│
-│Graph       │ │Service     │ │Service     │
-│            │ │            │ │            │
-│- Follow    │ │- DM/Chat   │ │- Push      │
-│- Friends   │ │- Groups    │ │- Real-time │
-│- Recommend │ │- Calls     │ │- Email     │
-└────────────┘ └────────────┘ └────────────┘
-    │                   │                   │
-    └───────────────────┼───────────────────┘
-                        │
-    ┌───────────────────┼───────────────────┐
-    │                   │                   │
-    ▼                   ▼                   ▼
-┌────────────┐ ┌────────────┐ ┌────────────┐
-│Media       │ │Search      │ │Analytics   │
-│Service     │ │Service     │ │Service     │
-│            │ │            │ │            │
-│- Upload    │ │- Posts     │ │- Metrics   │
-│- Process   │ │- Users     │ │- ML Insights│
-│- Stream    │ │- Trending  │ │- Ads       │
-└────────────┘ └────────────┘ └────────────┘
-                        │
-                        ▼
-┌─────────────────────────────────────────────────┐
-│          Machine Learning Platform              │
-│                                                 │
-│ ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────┐   │
-│ │Feed     │  │Content  │  │Friend   │  │Ad   │   │
-│ │Ranking  │  │Moderation│ │Suggest  │  │Target│  │
-│ │         │  │         │  │         │  │     │   │
-│ │- Neural │  │- Image  │  │- Graph  │  │-CTR │   │
-│ │  Net    │  │- Text   │  │- ML     │  │-Rev │   │
-│ │- Collab │  │- Video  │  │- Social │  │-Opt │   │
-│ └─────────┘  └─────────┘  └─────────┘  └─────┘   │
-└─────────────────────────────────────────────────┘
-                        │
-                        ▼
-┌─────────────────────────────────────────────────┐
-│                 Data Layer                      │
-│                                                 │
-│ ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────┐   │
-│ │MySQL    │  │Cassandra│  │  Redis  │  │Kafka│   │
-│ │         │  │         │  │         │  │     │   │
-│ │- Users  │  │- Posts  │  │- Cache  │  │-Events│ │
-│ │- Graph  │  │- Messages│ │- Sessions│ │-Logs│   │
-│ │- Config │  │- Analytics│ │- Feed   │  │-ML  │   │
-│ └─────────┘  └─────────┘  └─────────┘  └─────┘   │
-└─────────────────────────────────────────────────┘
-```
-
-### Key Components:
-- **Feed Service**: Personalized timeline generation and ranking
-- **Social Graph Service**: Friend connections and recommendations  
-- **Post Service**: Content creation, media processing, moderation
-- **Messaging Service**: Real-time chat and group communications
-- **ML Platform**: Feed ranking, content moderation, ad targeting
-
----
-
-## Phase 4: Database Design (8 minutes)
-
-### Database Strategy:
-- **MySQL**: Users, social graph, configuration (ACID compliance needed)
-- **Cassandra**: Posts, messages, analytics (massive write volume)
-- **Redis**: Caching, sessions, real-time features
-- **S3/Blob Storage**: Media files with CDN distribution
-
-### MySQL Schema (Core Social Data):
+## 3. Database Design with Explanations
 
 ```sql
--- Users table
+/*
+ * TABLE: users
+ *
+ * WHY this table exists:
+ *   - Core entity. Every post, like, comment, follow is tied to a user.
+ *   - Stores profile data for display in feeds and notifications.
+ *
+ * WHY each foreign key/relationship:
+ *   - No FKs in users (root entity). Referenced by posts, comments, likes,
+ *     follows, notifications.
+ *
+ * WHY this structure over alternatives:
+ *   - BIGINT id: Simple, efficient for joins. UUID alternative for distributed
+ *     systems; BIGINT fine for single-DB LLD scope.
+ *   - followers_count, following_count: Denormalized counters for fast display.
+ *     Updated via triggers or application logic on follow/unfollow.
+ *
+ * WHY these indexes:
+ *   - idx_users_username: Unique lookup for @username mentions and profile URLs.
+ *   - idx_users_email: Auth and uniqueness.
+ */
 CREATE TABLE users (
     user_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     username VARCHAR(50) UNIQUE NOT NULL,
     email VARCHAR(255) UNIQUE NOT NULL,
-    phone VARCHAR(20) UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
-    
-    -- Profile information
-    first_name VARCHAR(100),
-    last_name VARCHAR(100),
     bio TEXT,
-    profile_picture_url VARCHAR(500),
-    cover_photo_url VARCHAR(500),
-    
-    -- Account status
-    is_verified BOOLEAN DEFAULT false,
-    account_status VARCHAR(20) DEFAULT 'active', -- active, suspended, deleted
-    privacy_level VARCHAR(20) DEFAULT 'public',  -- public, friends, private
-    
-    -- Metrics
+    avatar_url VARCHAR(500),
     followers_count INT DEFAULT 0,
     following_count INT DEFAULT 0,
-    posts_count INT DEFAULT 0,
-    
-    -- Timestamps
-    created_at TIMESTAMP DEFAULT NOW(),
-    last_active_at TIMESTAMP DEFAULT NOW(),
-    
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
     INDEX idx_users_username (username),
-    INDEX idx_users_email (email),
-    INDEX idx_users_last_active (last_active_at)
+    INDEX idx_users_email (email)
 );
 
--- Social connections (friendships/follows)
-CREATE TABLE user_connections (
-    connection_id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    follower_id BIGINT NOT NULL,              -- User who follows
-    following_id BIGINT NOT NULL,             -- User being followed
-    
-    connection_type VARCHAR(20) DEFAULT 'follow', -- follow, friend, block
-    connection_status VARCHAR(20) DEFAULT 'active', -- active, pending, blocked
-    
-    created_at TIMESTAMP DEFAULT NOW(),
-    
-    UNIQUE KEY unique_connection (follower_id, following_id),
-    INDEX idx_follower (follower_id, connection_type, connection_status),
-    INDEX idx_following (following_id, connection_type, connection_status)
-);
-
--- User interests and preferences (for ML)
-CREATE TABLE user_interests (
-    user_id BIGINT,
-    interest_category VARCHAR(50),            -- technology, sports, music, etc.
-    interest_weight DECIMAL(3,2) DEFAULT 1.0, -- 0.0 to 1.0 preference strength
-    
-    created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW(),
-    
-    PRIMARY KEY (user_id, interest_category),
-    INDEX idx_category_weight (interest_category, interest_weight DESC)
-);
-```
-
-### Cassandra Schema (High-Volume Data):
-
-```sql
--- Posts table (partitioned by user_id for user timeline queries)
+/*
+ * TABLE: posts
+ *
+ * WHY this table exists:
+ *   - Core content entity. Feed is built from posts.
+ *   - Stores text content and metadata; media stored separately (see media table).
+ *
+ * WHY each foreign key/relationship:
+ *   - user_id -> users: Every post has an author. Enables "posts by user X"
+ *     and feed assembly from followed users.
+ *
+ * WHY this structure over alternatives:
+ *   - visibility enum: PUBLIC/PRIVATE/FRIENDS_ONLY. Stored as VARCHAR for
+ *     flexibility; enum in application.
+ *   - content TEXT: Variable-length; TEXT allows long posts.
+ *
+ * WHY these indexes:
+ *   - idx_posts_user_created: User's timeline = posts by user_id ORDER BY created_at DESC.
+ *   - idx_posts_created: Chronological feed; trending by recency.
+ *   - idx_posts_visibility: Filter by visibility for feed assembly.
+ */
 CREATE TABLE posts (
-    user_id BIGINT,                          -- Partition key
-    post_id UUID,                            -- Clustering key
-    
-    -- Post content
-    content TEXT,
-    media_urls LIST<TEXT>,                   -- Photo/video URLs
-    post_type VARCHAR(20) DEFAULT 'text',    -- text, photo, video, story
-    
-    -- Engagement metrics
-    likes_count COUNTER DEFAULT 0,
-    comments_count COUNTER DEFAULT 0,
-    shares_count COUNTER DEFAULT 0,
-    views_count COUNTER DEFAULT 0,
-    
-    -- Metadata
-    hashtags SET<TEXT>,
-    mentions SET<BIGINT>,                    -- User IDs mentioned
-    location TEXT,
-    
-    -- Configuration
-    visibility VARCHAR(20) DEFAULT 'public', -- public, friends, private
-    comments_enabled BOOLEAN DEFAULT true,
-    
-    -- Timestamps
-    created_at TIMESTAMP,
-    updated_at TIMESTAMP,
-    
-    PRIMARY KEY (user_id, created_at, post_id)
-) WITH CLUSTERING ORDER BY (created_at DESC);
+    post_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    content TEXT NOT NULL,
+    visibility VARCHAR(20) NOT NULL DEFAULT 'PUBLIC',
+    likes_count INT DEFAULT 0,
+    comments_count INT DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
--- Global posts feed (for discovery and trending)
-CREATE TABLE global_posts (
-    post_date DATE,                          -- Partition key (YYYY-MM-DD)
-    post_id UUID,                            -- Clustering key
-    user_id BIGINT,
-    
-    content TEXT,
-    media_urls LIST<TEXT>,
-    hashtags SET<TEXT>,
-    
-    -- Engagement for ranking
-    engagement_score DOUBLE,                 -- Calculated engagement metric
-    created_at TIMESTAMP,
-    
-    PRIMARY KEY (post_date, engagement_score, post_id)
-) WITH CLUSTERING ORDER BY (engagement_score DESC, post_id DESC);
+    CONSTRAINT fk_posts_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    INDEX idx_posts_user_created (user_id, created_at DESC),
+    INDEX idx_posts_created (created_at DESC),
+    INDEX idx_posts_visibility (visibility)
+);
 
--- User feed cache (precomputed personalized feeds)
-CREATE TABLE user_feeds (
-    user_id BIGINT,                          -- Partition key
-    feed_rank BIGINT,                        -- Clustering key (for ordering)
-    post_id UUID,
-    
-    -- Post preview for fast loading
-    author_id BIGINT,
-    author_username TEXT,
-    author_profile_pic TEXT,
-    content_preview TEXT,                    -- First 200 chars
-    media_thumbnail TEXT,
-    
-    -- Ranking factors
-    relevance_score DOUBLE,                  -- ML-computed relevance
-    interaction_probability DOUBLE,          -- Predicted engagement
-    
-    -- Metadata
-    post_created_at TIMESTAMP,
-    added_to_feed_at TIMESTAMP,
-    
-    PRIMARY KEY (user_id, feed_rank)
-) WITH CLUSTERING ORDER BY (feed_rank ASC);
+/*
+ * TABLE: comments
+ *
+ * WHY this table exists:
+ *   - Comments are first-class entities. Need to show "who commented what when",
+ *     support nested replies, and count comments per post.
+ *
+ * WHY each foreign key/relationship:
+ *   - user_id -> users: Commenter identity.
+ *   - post_id -> posts: Comment belongs to a post. CASCADE delete when post deleted.
+ *   - parent_comment_id -> comments: Optional. Enables nested replies (threaded comments).
+ *
+ * WHY this structure over alternatives:
+ *   - parent_comment_id NULL: Top-level comment. Non-NULL = reply to that comment.
+ *   - Flat vs nested: parent_comment_id allows both; can fetch top-level and
+ *     optionally load replies.
+ *
+ * WHY these indexes:
+ *   - idx_comments_post_created: "Get comments for post X" ordered by time.
+ *   - idx_comments_parent: Load replies for a given parent comment.
+ */
+CREATE TABLE comments (
+    comment_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    post_id BIGINT NOT NULL,
+    user_id BIGINT NOT NULL,
+    parent_comment_id BIGINT NULL,
+    content TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
--- Direct messages
-CREATE TABLE messages (
-    conversation_id UUID,                    -- Partition key
-    message_id UUID,                         -- Clustering key
-    
-    sender_id BIGINT NOT NULL,
-    recipient_id BIGINT NOT NULL,
-    
-    -- Message content
-    message_text TEXT,
-    media_urls LIST<TEXT>,
-    message_type VARCHAR(20) DEFAULT 'text', -- text, photo, video, emoji
-    
-    -- Message status
-    is_read BOOLEAN DEFAULT false,
-    is_deleted BOOLEAN DEFAULT false,
-    read_at TIMESTAMP,
-    
-    created_at TIMESTAMP,
-    
-    PRIMARY KEY (conversation_id, created_at, message_id)
-) WITH CLUSTERING ORDER BY (created_at DESC);
+    CONSTRAINT fk_comments_post FOREIGN KEY (post_id) REFERENCES posts(post_id) ON DELETE CASCADE,
+    CONSTRAINT fk_comments_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    CONSTRAINT fk_comments_parent FOREIGN KEY (parent_comment_id) REFERENCES comments(comment_id) ON DELETE CASCADE,
+    INDEX idx_comments_post_created (post_id, created_at ASC),
+    INDEX idx_comments_parent (parent_comment_id)
+);
 
--- Real-time analytics (time-series data)
-CREATE TABLE post_analytics (
-    post_id UUID,
-    analytics_date DATE,                     -- Partition key
-    hour_bucket INT,                         -- 0-23 for hourly aggregation
-    
-    -- Engagement metrics per hour
-    hourly_likes COUNTER,
-    hourly_comments COUNTER,
-    hourly_shares COUNTER,
-    hourly_views COUNTER,
-    
-    -- Geographic breakdown
-    country_stats MAP<TEXT, INT>,            -- Country -> engagement count
-    
-    PRIMARY KEY (post_id, analytics_date, hour_bucket)
-) WITH CLUSTERING ORDER BY (analytics_date DESC, hour_bucket DESC);
+/*
+ * TABLE: likes
+ *
+ * WHY likes is a SEPARATE table (not just a counter on posts):
+ *   1. WHO liked: Need to show "Liked by X, Y and 10 others" and "Unlike" for
+ *      the current user. A counter alone cannot tell who liked.
+ *   2. Idempotency: Like (user_id, post_id) UNIQUE prevents duplicate likes.
+ *      Double-click = single row; unlike deletes that row. Counter would need
+ *      complex logic to avoid double-counting.
+ *   3. Unlike: Delete row from likes; decrement posts.likes_count. Simple and correct.
+ *   4. Analytics: "Which posts did user X like?" requires querying by user_id.
+ *   5. Notifications: "User Y liked your post" — need to know Y's identity.
+ *
+ * WHY each foreign key/relationship:
+ *   - user_id -> users: Who liked.
+ *   - post_id -> posts: Which post. CASCADE delete when post deleted.
+ *
+ * WHY UNIQUE(user_id, post_id):
+ *   - One like per user per post. Prevents duplicates; enables idempotent like.
+ *
+ * WHY these indexes:
+ *   - idx_likes_post: "Get likers of post X" and "Count likes for post X".
+ *   - idx_likes_user: "Posts user X liked" for analytics and feed ranking.
+ *   - UNIQUE: Enforces one-like-per-user and enables upsert/delete for idempotency.
+ */
+CREATE TABLE likes (
+    like_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    post_id BIGINT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT fk_likes_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    CONSTRAINT fk_likes_post FOREIGN KEY (post_id) REFERENCES posts(post_id) ON DELETE CASCADE,
+    UNIQUE KEY uk_likes_user_post (user_id, post_id),
+    INDEX idx_likes_post (post_id),
+    INDEX idx_likes_user (user_id)
+);
+
+/*
+ * TABLE: follows
+ *
+ * WHY follows has BOTH follower_id AND following_id:
+ *   - Asymmetric relationship: "A follows B" means A is the follower, B is being followed.
+ *   - follower_id = user who clicks "Follow" (the follower).
+ *   - following_id = user who is followed (the followee).
+ *   - A follows B ≠ B follows A. Two rows: (A,B) and (B,A) if mutual.
+ *   - Feed query: "Get posts from users that current_user follows" =
+ *     SELECT * FROM posts WHERE user_id IN (SELECT following_id FROM follows WHERE follower_id = current_user).
+ *   - "Who follows me?" = follower_id where following_id = me.
+ *   - "Who do I follow?" = following_id where follower_id = me.
+ *
+ * WHY each foreign key/relationship:
+ *   - follower_id -> users: The follower.
+ *   - following_id -> users: The followee.
+ *
+ * WHY UNIQUE(follower_id, following_id):
+ *   - One follow relationship per pair. Prevents duplicate follows.
+ *
+ * WHY these indexes:
+ *   - idx_follows_follower: "Who do I follow?" — list of following_id for a follower.
+ *   - idx_follows_following: "Who follows me?" — list of follower_id for a followee.
+ */
+CREATE TABLE follows (
+    follow_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    follower_id BIGINT NOT NULL,
+    following_id BIGINT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT fk_follows_follower FOREIGN KEY (follower_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    CONSTRAINT fk_follows_following FOREIGN KEY (following_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    UNIQUE KEY uk_follows_follower_following (follower_id, following_id),
+    INDEX idx_follows_follower (follower_id),
+    INDEX idx_follows_following (following_id),
+    CHECK (follower_id != following_id)
+);
+
+/*
+ * TABLE: media
+ *
+ * WHY media is SEPARATE from posts:
+ *   1. One post, multiple media: A post can have multiple images/videos.
+ *      Storing in posts would require JSON array or separate columns; media table
+ *      is normalized (one row per media item).
+ *   2. Reusability: Same image could theoretically be attached to multiple posts
+ *      (e.g., shared content). Separate table allows post_id FK to link.
+ *   3. Different processing: Media needs upload, CDN, transcoding (video).
+ *      Separate table allows media-specific logic (dimensions, format, thumbnail).
+ *   4. Storage/bandwidth: Media URLs and metadata separate from post text.
+ *      Can archive/delete media independently.
+ *   5. Lazy loading: Feed can load post text first, media on demand.
+ *
+ * WHY each foreign key/relationship:
+ *   - post_id -> posts: Media belongs to a post. CASCADE when post deleted.
+ *
+ * WHY this structure:
+ *   - content_type: IMAGE, VIDEO. Different handling (thumbnail vs stream).
+ *   - url: CDN URL. Actual file in object storage (S3); DB stores reference.
+ *   - display_order: Order of media in carousel (1, 2, 3...).
+ *
+ * WHY these indexes:
+ *   - idx_media_post: "Get all media for post X" for display.
+ */
+CREATE TABLE media (
+    media_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    post_id BIGINT NOT NULL,
+    content_type VARCHAR(20) NOT NULL,
+    url VARCHAR(1000) NOT NULL,
+    thumbnail_url VARCHAR(1000),
+    display_order INT DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT fk_media_post FOREIGN KEY (post_id) REFERENCES posts(post_id) ON DELETE CASCADE,
+    INDEX idx_media_post (post_id)
+);
+
+/*
+ * TABLE: notifications
+ *
+ * WHY this table exists:
+ *   - Users need to see "X liked your post", "Y commented", "Z followed you".
+ *   - Store notification events for in-app feed and push.
+ *
+ * WHY each foreign key/relationship:
+ *   - user_id -> users: Recipient of notification (whose notification feed).
+ *   - actor_id -> users: Who performed the action (liker, commenter, follower).
+ *   - post_id, comment_id: Optional. Reference to related content for deep linking.
+ *
+ * WHY this structure:
+ *   - notification_type: LIKE, COMMENT, FOLLOW, etc. Drives UI and routing.
+ *   - is_read: Track read state for badge counts.
+ *
+ * WHY these indexes:
+ *   - idx_notifications_user_created: "Get my notifications" ordered by time.
+ *   - idx_notifications_unread: "Count unread" for badge.
+ */
+CREATE TABLE notifications (
+    notification_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    actor_id BIGINT NOT NULL,
+    notification_type VARCHAR(30) NOT NULL,
+    post_id BIGINT NULL,
+    comment_id BIGINT NULL,
+    is_read BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT fk_notifications_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    CONSTRAINT fk_notifications_actor FOREIGN KEY (actor_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    CONSTRAINT fk_notifications_post FOREIGN KEY (post_id) REFERENCES posts(post_id) ON DELETE SET NULL,
+    CONSTRAINT fk_notifications_comment FOREIGN KEY (comment_id) REFERENCES comments(comment_id) ON DELETE SET NULL,
+    INDEX idx_notifications_user_created (user_id, created_at DESC),
+    INDEX idx_notifications_unread (user_id, is_read)
+);
 ```
-
-### Redis Cache Strategy:
-
-```javascript
-// User session and authentication
-"session:{session_id}": {
-  "user_id": 123456,
-  "username": "john_doe",
-  "last_activity": 1704110400,
-  "permissions": ["read", "write", "admin"],
-  "ttl": 86400                             // 24 hours
-}
-
-// Hot user feed cache (pre-computed timeline)
-"feed:{user_id}": [
-  {
-    "post_id": "uuid-1",
-    "author_id": 789,
-    "content_preview": "Just visited the most amazing...",
-    "media_thumbnail": "https://cdn.social.com/thumb/123.jpg",
-    "created_at": 1704110400,
-    "relevance_score": 0.95
-  },
-  // ... top 50 posts in feed
-]
-
-// Post engagement cache (for real-time updates)
-"post_stats:{post_id}": {
-  "likes_count": 1250,
-  "comments_count": 89,
-  "shares_count": 34,
-  "views_count": 12500,
-  "ttl": 300                               // 5 minutes
-}
-
-// User online status and presence
-"presence:{user_id}": {
-  "status": "online",                      // online, away, offline
-  "last_seen": 1704110400,
-  "active_device": "mobile",
-  "ttl": 900                               // 15 minutes
-}
-
-// Real-time notifications queue
-"notifications:{user_id}": [
-  {
-    "type": "like",
-    "actor_id": 456,
-    "actor_name": "Jane Smith",
-    "post_id": "uuid-1",
-    "created_at": 1704110400
-  },
-  // ... recent notifications
-]
-
-// Trending hashtags and topics
-"trending:global": [
-  {"hashtag": "#WorldCup", "mentions_24h": 2500000},
-  {"hashtag": "#TechNews", "mentions_24h": 890000},
-  {"hashtag": "#MondayMotivation", "mentions_24h": 650000}
-]
-
-// Friend suggestions cache
-"friend_suggestions:{user_id}": [
-  {
-    "suggested_user_id": 789,
-    "mutual_friends": 5,
-    "suggestion_score": 0.87,
-    "reason": "mutual_connections"
-  },
-  // ... top 20 suggestions
-]
-
-// Rate limiting per user
-"rate_limit:posts:{user_id}": {
-  "posts_last_hour": 8,
-  "posts_last_day": 45,
-  "ttl": 3600
-}
-
-// Popular content cache (for discovery)
-"popular:posts:24h": [
-  {"post_id": "uuid-1", "engagement_score": 95000},
-  {"post_id": "uuid-2", "engagement_score": 87000}
-]
-```
-
-### Design Decisions:
-- **Multi-database approach**: Leverage strengths of each database type
-- **Denormalized feeds**: Pre-compute user timelines for fast loading
-- **Time-series partitioning**: Efficient analytics and message storage
-- **Counter columns**: Real-time engagement metrics without read-modify-write
-- **Cache-heavy architecture**: Redis for all real-time features
 
 ---
 
-## Phase 5: Critical Flow - News Feed Generation (8 minutes)
+## 4. Design Patterns
 
-### Most Critical Flow: Personalized Feed Generation
+| Pattern | Where | Why |
+|---------|-------|-----|
+| **Strategy** | `FeedGenerationStrategy` (ChronologicalFeed, RankedFeed, TrendingFeed) | Different feed algorithms are interchangeable. Client selects strategy at runtime; add new algorithms without changing FeedService. |
+| **Observer** | `PostEventObserver` (FeedUpdateObserver, NotificationObserver, TrendingObserver) | When post is created/liked/commented, multiple subsystems react (feed update, notification, trending). Observer decouples publishers from subscribers. |
+| **Factory** | `ContentFactory` (create TextPost, ImagePost, VideoPost) | Encapsulates creation logic for different post types. Caller doesn't need to know concrete classes. |
+| **Builder** | `Post.Builder` | Post has many optional fields (media, tags, location, visibility). Builder avoids telescoping constructors and improves readability. |
+| **Repository** | `PostRepository`, `UserRepository`, etc. | Abstracts data access. Services depend on interfaces; enables testing with mocks. |
+| **Dependency Injection** | `FeedService`, `PostService` constructors | Services receive dependencies via constructor. Loose coupling, testability. |
 
-**1. Feed Request**
-```
-User opens app → GET /api/feed?limit=20&offset=0
-Headers: Authorization: Bearer {jwt_token}
-```
+---
 
-**2. Cache-First Feed Serving**
-```
-Feed Service processing:
-1. Extract user_id from JWT token
-2. Check Redis cache for pre-computed feed
-3. If cache hit (90% case):
-   - Return cached feed posts
-   - Async: trigger feed refresh if cache is >30 min old
-4. If cache miss (10% case):
-   - Generate feed using ML ranking service
-   - Cache result and return
-```
+## 5. SOLID Principles
 
-**3. Real-Time Feed Generation (Cache Miss)**
-```
-ML-Powered Feed Assembly:
-1. Fetch user's social connections (following list)
-2. Get recent posts from followed users (last 7 days)
-3. Fetch user's interest profile and engagement history
-4. Run ML ranking algorithm:
-   - Content relevance score (user interests vs post topics)
-   - Social signals (likes, comments from mutual friends)
-   - Recency factor (newer posts get higher priority)
-   - Diversity factor (mix of content types and authors)
-5. Score and rank ~1000 candidate posts
-6. Return top 50 posts with metadata
-```
+| Principle | How |
+|-----------|-----|
+| **S - Single Responsibility** | `ChronologicalFeedStrategy` only generates chronological feed. `PostService` orchestrates post creation; doesn't implement feed logic. |
+| **O - Open/Closed** | New feed algorithms: implement `FeedGenerationStrategy`. New post types: extend `ContentFactory`. No changes to existing code. |
+| **L - Liskov Substitution** | Any `FeedGenerationStrategy` can replace another in `FeedService`. Any `PostEventObserver` can be added/removed without breaking others. |
+| **I - Interface Segregation** | `FeedGenerationStrategy` has one method. `PostEventObserver` has one method. No fat interfaces. |
+| **D - Dependency Inversion** | `FeedService` depends on `FeedGenerationStrategy` and `PostRepository` (abstractions), not concrete implementations. |
 
-**4. Feed Personalization Algorithm**
-```
-ML Ranking Service:
-For each candidate post, calculate score:
+---
 
-relevance_score = 0.4 * content_similarity + 
-                 0.3 * social_proof + 
-                 0.2 * recency_factor + 
-                 0.1 * diversity_bonus
+## 6. Code Implementation in Java
 
-Where:
-- content_similarity: User interest alignment (0-1)
-- social_proof: Engagement from user's network (0-1) 
-- recency_factor: Time decay function (0-1)
-- diversity_bonus: Content type and author variety (0-0.2)
+### Enums
 
-Final ranking: Sort by relevance_score DESC
-```
+```java
+/**
+ * WHY enum: Type-safe visibility. Prevents invalid values.
+ * PUBLIC: visible to all. PRIVATE: only author. FRIENDS_ONLY: only followers.
+ */
+public enum PostVisibility {
+    PUBLIC,
+    PRIVATE,
+    FRIENDS_ONLY
+}
 
-**5. Feed Delivery & Client Rendering**
-```
-Client receives feed response:
-1. Parse JSON feed data
-2. Render post cards with lazy loading
-3. Preload media thumbnails for visible posts
-4. Set up infinite scroll for pagination
-5. Cache media assets locally
-6. Track view events for analytics
-```
+/**
+ * WHY enum: Drives notification UI and routing.
+ * Matches observer logic (NotificationObserver creates by type).
+ */
+public enum NotificationType {
+    LIKE,
+    COMMENT,
+    FOLLOW,
+    MENTION
+}
 
-### Critical Flow: Post Creation & Distribution
-
-**1. Post Creation**
-```
-User creates post → POST /api/posts
-{
-  "content": "Beautiful sunset at the beach! #sunset #photography",
-  "media_files": ["image1.jpg", "image2.jpg"],
-  "visibility": "public",
-  "location": "Malibu Beach, CA"
+/**
+ * WHY enum: Different post types need different creation/display logic.
+ * ContentFactory uses this to create appropriate Post subclass.
+ */
+public enum ContentType {
+    TEXT,
+    IMAGE,
+    VIDEO
 }
 ```
 
-**2. Content Processing Pipeline**
+### Models with OOP
+
+```java
+import java.util.*;
+
+/**
+ * User with follow management.
+ * OOP: Encapsulation - follow/unfollow logic inside User or UserService.
+ * WHY: User "knows" about its social graph; follow operations are user-centric.
+ */
+public final class User {
+    private final long userId;
+    private final String username;
+    private final String email;
+    private final String bio;
+    private final String avatarUrl;
+    private final int followersCount;
+    private final int followingCount;
+
+    private User(Builder b) {
+        this.userId = b.userId;
+        this.username = b.username;
+        this.email = b.email;
+        this.bio = b.bio;
+        this.avatarUrl = b.avatarUrl;
+        this.followersCount = b.followersCount;
+        this.followingCount = b.followingCount;
+    }
+
+    public long getUserId() { return userId; }
+    public String getUsername() { return username; }
+    public String getEmail() { return email; }
+    public String getBio() { return bio; }
+    public String getAvatarUrl() { return avatarUrl; }
+    public int getFollowersCount() { return followersCount; }
+    public int getFollowingCount() { return followingCount; }
+
+    public static Builder builder() { return new Builder(); }
+    public static class Builder {
+        private long userId; private String username; private String email;
+        private String bio; private String avatarUrl;
+        private int followersCount; private int followingCount;
+        public Builder userId(long id) { this.userId = id; return this; }
+        public Builder username(String u) { this.username = u; return this; }
+        public Builder email(String e) { this.email = e; return this; }
+        public Builder bio(String b) { this.bio = b; return this; }
+        public Builder avatarUrl(String a) { this.avatarUrl = a; return this; }
+        public Builder followersCount(int c) { this.followersCount = c; return this; }
+        public Builder followingCount(int c) { this.followingCount = c; return this; }
+        public User build() { return new User(this); }
+    }
+}
+
+/**
+ * Post with encapsulation.
+ * OOP: Post encapsulates content, visibility, metadata.
+ * WHY: Callers use getters; validation (e.g., visibility check) inside Post.
+ */
+public class Post {
+    private final long postId;
+    private final long userId;
+    private final String content;
+    private final PostVisibility visibility;
+    private final ContentType contentType;
+    private final List<MediaItem> media;
+    private final Set<String> tags;
+    private final String location;
+    private final int likesCount;
+    private final int commentsCount;
+    private final java.time.Instant createdAt;
+
+    private Post(Builder b) {
+        this.postId = b.postId;
+        this.userId = b.userId;
+        this.content = b.content;
+        this.visibility = b.visibility;
+        this.contentType = b.contentType;
+        this.media = Collections.unmodifiableList(new ArrayList<>(b.media));
+        this.tags = Collections.unmodifiableSet(new HashSet<>(b.tags));
+        this.location = b.location;
+        this.likesCount = b.likesCount;
+        this.commentsCount = b.commentsCount;
+        this.createdAt = b.createdAt;
+    }
+
+    public long getPostId() { return postId; }
+    public long getUserId() { return userId; }
+    public String getContent() { return content; }
+    public PostVisibility getVisibility() { return visibility; }
+    public ContentType getContentType() { return contentType; }
+    public List<MediaItem> getMedia() { return media; }
+    public Set<String> getTags() { return tags; }
+    public String getLocation() { return location; }
+    public int getLikesCount() { return likesCount; }
+    public int getCommentsCount() { return commentsCount; }
+    public java.time.Instant getCreatedAt() { return createdAt; }
+
+    /** WHY: Encapsulation - visibility logic in one place. */
+    public boolean isVisibleTo(long viewerId, boolean isFollower) {
+        if (visibility == PostVisibility.PUBLIC) return true;
+        if (visibility == PostVisibility.PRIVATE) return viewerId == userId;
+        return visibility == PostVisibility.FRIENDS_ONLY && (viewerId == userId || isFollower);
+    }
+
+    public static Builder builder() { return new Builder(); }
+    public static class Builder {
+        private long postId; private long userId; private String content;
+        private PostVisibility visibility = PostVisibility.PUBLIC;
+        private ContentType contentType = ContentType.TEXT;
+        private List<MediaItem> media = new ArrayList<>();
+        private Set<String> tags = new HashSet<>();
+        private String location;
+        private int likesCount; private int commentsCount;
+        private java.time.Instant createdAt = java.time.Instant.now();
+
+        public Builder postId(long id) { this.postId = id; return this; }
+        public Builder userId(long id) { this.userId = id; return this; }
+        public Builder content(String c) { this.content = c; return this; }
+        public Builder visibility(PostVisibility v) { this.visibility = v; return this; }
+        public Builder contentType(ContentType t) { this.contentType = t; return this; }
+        public Builder media(List<MediaItem> m) { this.media = m != null ? m : new ArrayList<>(); return this; }
+        public Builder addMedia(MediaItem m) { this.media.add(m); return this; }
+        public Builder tags(Set<String> t) { this.tags = t != null ? t : new HashSet<>(); return this; }
+        public Builder addTag(String t) { this.tags.add(t); return this; }
+        public Builder location(String l) { this.location = l; return this; }
+        public Builder likesCount(int c) { this.likesCount = c; return this; }
+        public Builder commentsCount(int c) { this.commentsCount = c; return this; }
+        public Builder createdAt(java.time.Instant t) { this.createdAt = t; return this; }
+        public Post build() { return new Post(this); }
+    }
+}
+
+public class MediaItem {
+    private final long mediaId;
+    private final String url;
+    private final String thumbnailUrl;
+    private final ContentType contentType;
+    public MediaItem(long mediaId, String url, String thumbnailUrl, ContentType contentType) {
+        this.mediaId = mediaId; this.url = url; this.thumbnailUrl = thumbnailUrl; this.contentType = contentType;
+    }
+    public long getMediaId() { return mediaId; }
+    public String getUrl() { return url; }
+    public String getThumbnailUrl() { return thumbnailUrl; }
+    public ContentType getContentType() { return contentType; }
+}
 ```
-Post Service processing:
-1. Content validation and sanitization
-2. Media upload to CDN (if present):
-   - Image processing: Multiple resolutions, compression
-   - Video processing: Encoding, thumbnail generation
-3. Extract hashtags and mentions
-4. Content moderation check (AI + human review queue)
-5. Store post in Cassandra (user timeline)
-6. Add to global posts index for discovery
+
+### Strategy: FeedGenerationStrategy
+
+```java
+/**
+ * Strategy Pattern: Interchangeable feed algorithms.
+ * WHY: Open/Closed - add ChronologicalFeed, RankedFeed, TrendingFeed without
+ * changing FeedService. Client injects strategy.
+ */
+public interface FeedGenerationStrategy {
+    List<Post> generateFeed(long userId, int limit, int offset);
+}
+
+/**
+ * Chronological: Posts from followed users, newest first.
+ * Fan-out on READ: Fetch posts at read time.
+ */
+public class ChronologicalFeedStrategy implements FeedGenerationStrategy {
+    private final PostRepository postRepo;
+    private final FollowRepository followRepo;
+
+    public ChronologicalFeedStrategy(PostRepository postRepo, FollowRepository followRepo) {
+        this.postRepo = postRepo;
+        this.followRepo = followRepo;
+    }
+
+    @Override
+    public List<Post> generateFeed(long userId, int limit, int offset) {
+        List<Long> followingIds = followRepo.findFollowingIds(userId);
+        if (followingIds.isEmpty()) return List.of();
+        return postRepo.findByUserIdsOrderByCreatedDesc(followingIds, limit, offset);
+    }
+}
+
+/**
+ * Ranked: ML-style ranking by engagement, recency, relevance.
+ * Simplified: score = likes_count * 2 + comments_count + recency_factor.
+ */
+public class RankedFeedStrategy implements FeedGenerationStrategy {
+    private final PostRepository postRepo;
+    private final FollowRepository followRepo;
+
+    public RankedFeedStrategy(PostRepository postRepo, FollowRepository followRepo) {
+        this.postRepo = postRepo;
+        this.followRepo = followRepo;
+    }
+
+    @Override
+    public List<Post> generateFeed(long userId, int limit, int offset) {
+        List<Long> followingIds = followRepo.findFollowingIds(userId);
+        if (followingIds.isEmpty()) return List.of();
+        List<Post> posts = postRepo.findByUserIdsOrderByCreatedDesc(followingIds, 500, 0);
+        // Rank by engagement score (simplified)
+        posts.sort((a, b) -> {
+            double scoreA = a.getLikesCount() * 2.0 + a.getCommentsCount() + recencyFactor(a.getCreatedAt());
+            double scoreB = b.getLikesCount() * 2.0 + b.getCommentsCount() + recencyFactor(b.getCreatedAt());
+            return Double.compare(scoreB, scoreA);
+        });
+        int from = Math.min(offset, posts.size());
+        int to = Math.min(offset + limit, posts.size());
+        return posts.subList(from, to);
+    }
+
+    private double recencyFactor(java.time.Instant createdAt) {
+        long hoursAgo = java.time.Duration.between(createdAt, java.time.Instant.now()).toHours();
+        return Math.max(0, 10 - hoursAgo);
+    }
+}
+
+/**
+ * Trending: Global posts with highest engagement in last 24h.
+ * Fan-out on READ: No precomputation in this simplified version.
+ */
+public class TrendingFeedStrategy implements FeedGenerationStrategy {
+    private final PostRepository postRepo;
+
+    public TrendingFeedStrategy(PostRepository postRepo) {
+        this.postRepo = postRepo;
+    }
+
+    @Override
+    public List<Post> generateFeed(long userId, int limit, int offset) {
+        java.time.Instant since = java.time.Instant.now().minus(java.time.Duration.ofHours(24));
+        return postRepo.findTrendingSince(since, limit, offset);
+    }
+}
 ```
 
-**3. Fan-out Strategy (Push vs Pull)**
+### Observer: PostEventObserver
+
+```java
+/**
+ * Observer Pattern: When post events occur, observers react.
+ * WHY: Loose coupling. PostService publishes; FeedUpdateObserver, NotificationObserver,
+ * TrendingObserver subscribe. Add new observers without changing PostService.
+ */
+public interface PostEventObserver {
+    void onPostCreated(Post post);
+    void onPostLiked(long postId, long userId, long likerId);
+    void onPostCommented(long postId, long userId, long commenterId, long commentId);
+}
+
+/**
+ * Updates feed cache when new post is created.
+ * Fan-out on WRITE: Push post to followers' feed caches.
+ */
+public class FeedUpdateObserver implements PostEventObserver {
+    private final FollowRepository followRepo;
+    private final FeedCache feedCache;
+
+    public FeedUpdateObserver(FollowRepository followRepo, FeedCache feedCache) {
+        this.followRepo = followRepo;
+        this.feedCache = feedCache;
+    }
+
+    @Override
+    public void onPostCreated(Post post) {
+        List<Long> followerIds = followRepo.findFollowerIds(post.getUserId());
+        for (long fid : followerIds) {
+            feedCache.prependToFeed(fid, post);
+        }
+    }
+
+    @Override
+    public void onPostLiked(long postId, long userId, long likerId) { /* no feed update */ }
+    @Override
+    public void onPostCommented(long postId, long userId, long commenterId, long commentId) { /* no feed update */ }
+}
+
+/**
+ * Creates notifications for likes, comments, follows.
+ */
+public class NotificationObserver implements PostEventObserver {
+    private final NotificationRepository notificationRepo;
+
+    public NotificationObserver(NotificationRepository notificationRepo) {
+        this.notificationRepo = notificationRepo;
+    }
+
+    @Override
+    public void onPostCreated(Post post) { /* no notification for own post */ }
+
+    @Override
+    public void onPostLiked(long postId, long userId, long likerId) {
+        if (userId != likerId) {
+            notificationRepo.create(userId, likerId, NotificationType.LIKE, postId, null);
+        }
+    }
+
+    @Override
+    public void onPostCommented(long postId, long userId, long commenterId, long commentId) {
+        if (userId != commenterId) {
+            notificationRepo.create(userId, commenterId, NotificationType.COMMENT, postId, commentId);
+        }
+    }
+}
+
+/**
+ * Updates trending score for post (simplified: just track engagement).
+ */
+public class TrendingObserver implements PostEventObserver {
+    private final TrendingRepository trendingRepo;
+
+    public TrendingObserver(TrendingRepository trendingRepo) {
+        this.trendingRepo = trendingRepo;
+    }
+
+    @Override
+    public void onPostCreated(Post post) {
+        trendingRepo.addPost(post.getPostId(), post.getCreatedAt());
+    }
+
+    @Override
+    public void onPostLiked(long postId, long userId, long likerId) {
+        trendingRepo.incrementEngagement(postId);
+    }
+
+    @Override
+    public void onPostCommented(long postId, long userId, long commenterId, long commentId) {
+        trendingRepo.incrementEngagement(postId);
+    }
+}
 ```
-Feed Distribution Service:
-1. Check user's follower count
-2. If followers < 10K (celebrity threshold):
-   - Push model: Add post to each follower's feed cache
-   - Async fanout via message queue
-3. If followers > 10K:
-   - Pull model: Store post in author's timeline
-   - Followers fetch during feed generation
-4. Hybrid: Push to active followers, pull for inactive
+
+### Factory: ContentFactory
+
+```java
+/**
+ * Factory Pattern: Create different post types (text, image, video).
+ * WHY: Encapsulates creation logic. Caller says create(ContentType.IMAGE, ...)
+ * and gets appropriate handling. Open/Closed for new types.
+ */
+public interface ContentFactory {
+    Post createPost(long userId, String content, ContentType type, List<MediaItem> media,
+                    Set<String> tags, String location, PostVisibility visibility);
+}
+
+public class DefaultContentFactory implements ContentFactory {
+    @Override
+    public Post createPost(long userId, String content, ContentType type, List<MediaItem> media,
+                           Set<String> tags, String location, PostVisibility visibility) {
+        return Post.builder()
+                .userId(userId)
+                .content(content)
+                .contentType(type)
+                .media(media != null ? media : List.of())
+                .tags(tags != null ? tags : Set.of())
+                .location(location)
+                .visibility(visibility)
+                .build();
+    }
+}
 ```
 
-**4. Real-Time Notifications**
+### FeedService and PostService (Orchestrators with DI)
+
+```java
+/**
+ * FeedService: Orchestrates feed generation.
+ * SOLID (S): Single responsibility - feed assembly only.
+ * SOLID (D): Depends on FeedGenerationStrategy (abstraction), not concrete strategies.
+ */
+public class FeedService {
+    private final FeedGenerationStrategy strategy;
+    private final FeedCache feedCache;
+
+    public FeedService(FeedGenerationStrategy strategy, FeedCache feedCache) {
+        this.strategy = strategy;
+        this.feedCache = feedCache;
+    }
+
+    public List<Post> getFeed(long userId, int limit, int offset) {
+        // Optional: check cache first for fan-out-on-write
+        List<Post> cached = feedCache.getFeed(userId, limit, offset);
+        if (!cached.isEmpty()) return cached;
+        return strategy.generateFeed(userId, limit, offset);
+    }
+}
+
+/**
+ * PostService: Orchestrates post creation, like, comment.
+ * Fan-out: On post create, notify observers (feed update, trending).
+ * Like/Unlike: Idempotent via UNIQUE(user_id, post_id) - insert ignore or delete.
+ */
+public class PostService {
+    private final PostRepository postRepo;
+    private final LikeRepository likeRepo;
+    private final List<PostEventObserver> observers;
+
+    public PostService(PostRepository postRepo, LikeRepository likeRepo,
+                       List<PostEventObserver> observers) {
+        this.postRepo = postRepo;
+        this.likeRepo = likeRepo;
+        this.observers = observers;
+    }
+
+    public Post createPost(Post post) {
+        Post saved = postRepo.save(post);
+        for (PostEventObserver o : observers) {
+            o.onPostCreated(saved);
+        }
+        return saved;
+    }
+
+    /**
+     * Like: Idempotent. If (userId, postId) already exists, no-op.
+     * WHY: Double-click like = single like. UNIQUE constraint prevents duplicate.
+     */
+    public boolean like(long userId, long postId) {
+        if (likeRepo.exists(userId, postId)) return false; // already liked
+        likeRepo.insert(userId, postId);
+        postRepo.incrementLikesCount(postId);
+        Post p = postRepo.findById(postId).orElseThrow();
+        for (PostEventObserver o : observers) {
+            o.onPostLiked(postId, p.getUserId(), userId);
+        }
+        return true;
+    }
+
+    /**
+     * Unlike: Idempotent. If not liked, no-op.
+     */
+    public boolean unlike(long userId, long postId) {
+        if (!likeRepo.exists(userId, postId)) return false;
+        likeRepo.delete(userId, postId);
+        postRepo.decrementLikesCount(postId);
+        return true;
+    }
+}
 ```
-Notification Service:
-1. Identify users to notify (followers, mentioned users)
-2. Generate notification events
-3. Send push notifications via mobile push services
-4. Update notification counts in Redis
-5. Store notification history in database
+
+### Fan-out on Write vs Read
+
+```java
+/**
+ * FAN-OUT ON WRITE (push):
+ *   - When user creates post, push to each follower's feed cache.
+ *   - Pros: Fast feed read (just read cache). Good for users with few followers.
+ *   - Cons: Celebrity with 1M followers = 1M cache writes per post. Expensive.
+ *
+ * FAN-OUT ON READ (pull):
+ *   - When user requests feed, fetch posts from followed users and merge/sort.
+ *   - Pros: No write amplification. Good for celebrities.
+ *   - Cons: Slower feed read (query + merge).
+ *
+ * HYBRID (common in production):
+ *   - Push for users with < 10K followers.
+ *   - Pull for users with > 10K followers (celebrities).
+ */
+public class HybridFeedService {
+    private static final int PUSH_THRESHOLD = 10_000;
+    private final FollowRepository followRepo;
+    private final FeedCache feedCache;
+    private final FeedGenerationStrategy pullStrategy;
+
+    public List<Post> getFeed(long userId, int limit, int offset) {
+        List<Post> cached = feedCache.getFeed(userId, limit, offset);
+        if (!cached.isEmpty()) return cached;
+        return pullStrategy.generateFeed(userId, limit, offset);
+    }
+
+    public void onPostCreated(Post post) {
+        int followerCount = followRepo.countFollowers(post.getUserId());
+        if (followerCount <= PUSH_THRESHOLD) {
+            List<Long> followerIds = followRepo.findFollowerIds(post.getUserId());
+            for (long fid : followerIds) {
+                feedCache.prependToFeed(fid, post);
+            }
+        }
+        // Else: pull-only; no push to cache
+    }
+}
 ```
-
-### Technical Challenges:
-
-**Feed Generation Performance:**
-- "Sub-100ms feed loading with ML ranking"
-- "Handling viral posts with millions of interactions"
-- "Personalization without privacy compromise"
-
-**Data Consistency:**
-- "Eventually consistent feeds vs real-time accuracy"
-- "Handling post deletions across distributed caches"
-- "Race conditions in engagement counting"
-
-**Scale & Hot Spotting:**
-- "Celebrity users with 100M+ followers"
-- "Viral content causing traffic spikes"
-- "Geographic load distribution"
-
-**Real-Time Features:**
-- "Live engagement updates (likes, comments)"
-- "Instant messaging with delivery guarantees"
-- "Presence indicators and typing status"
 
 ---
 
-## Phase 6: Scaling & Bottlenecks (2 minutes)
+## 7. Edge Cases & Tests
 
-### Main Bottlenecks:
-1. **Feed generation**: ML ranking for millions of users simultaneously
-2. **Celebrity fanout**: Users with 100M+ followers posting content
-3. **Media processing**: Video encoding and global CDN distribution
-4. **Database writes**: 10B+ daily interactions and analytics
-5. **Real-time features**: WebSocket connections for 200M concurrent users
-
-### Scaling Solutions:
-
-**Feed & Ranking Optimization:**
-```
-- Pre-compute feeds for active users during low-traffic hours
-- Approximate algorithms: Use sampling for large follower lists
-- ML model optimization: Quantized models, GPU acceleration
-- Regional feed generation: Distribute ML workload geographically
-```
-
-**Celebrity User Handling:**
-```
-- Hybrid fanout: Push for small audiences, pull for celebrities
-- Follower sampling: Notify sample of followers, not all
-- Dedicated infrastructure: Separate queues for high-follower users
-- Rate limiting: Prevent spam from verified accounts
-```
-
-**Database & Storage Scaling:**
-```
-- Database sharding: Partition by user_id hash
-- Read replicas: Separate analytical and operational workloads
-- Time-based partitioning: Archive old posts to cold storage
-- Cassandra tuning: Optimized for write-heavy workloads
-```
-
-**Media & CDN Optimization:**
-```
-- Multi-CDN strategy: Geographic distribution, failover
-- Adaptive streaming: Video quality based on connection speed
-- Image optimization: WebP format, progressive loading
-- Edge computing: Process media closer to users
-```
-
-**Real-Time Infrastructure:**
-```
-- WebSocket clustering: Distribute connections across servers
-- Message queues: Kafka for reliable event processing
-- Push notification batching: Reduce mobile battery impact
-- Connection pooling: Efficient resource utilization
-```
-
-### Trade-offs:
-- **Personalization vs Performance**: Complex ML vs simple chronological feeds
-- **Consistency vs Availability**: Real-time updates vs system stability
-- **Features vs Simplicity**: Rich functionality vs maintainable codebase
-- **Privacy vs Engagement**: User data protection vs recommendation accuracy
+| # | Edge Case | Test / Handling |
+|---|-----------|-----------------|
+| 1 | **Double like (idempotency)** | User likes same post twice. Second like returns false; likes_count unchanged. Assert: likeRepo.count(postId) == 1. |
+| 2 | **Unlike when not liked** | User unlikes post they never liked. Return false; no error. Assert: postRepo.getLikesCount(postId) unchanged. |
+| 3 | **Follow self** | User tries to follow themselves. CHECK (follower_id != following_id) or application validation. Reject. |
+| 4 | **Duplicate follow** | User follows same person twice. UNIQUE(follower_id, following_id) prevents duplicate. Second insert fails; return "already following". |
+| 5 | **Feed for user with no follows** | User follows nobody. Feed returns empty list. ChronologicalFeedStrategy handles: if (followingIds.isEmpty()) return List.of(). |
+| 6 | **Post visibility FRIENDS_ONLY** | User A posts FRIENDS_ONLY. User B (not follower) requests feed. Post not included. Post.isVisibleTo(B, isFollower=false) returns false. |
+| 7 | **Delete post cascades** | Post deleted. Likes, comments, media, notifications with post_id should CASCADE or SET NULL. Assert: likes for postId == 0. |
+| 8 | **Pagination offset beyond data** | getFeed(userId, limit=20, offset=1000) when user has 50 posts. Return empty list; no exception. |
 
 ---
 
-## Advanced Features:
+## 8. Summary
 
-**AI & Machine Learning:**
-- Advanced content moderation (image, video, text analysis)
-- Deepfake detection for video content
-- Personalized ad targeting with privacy preservation
-- Automated content translation for global audience
-
-**Content & Safety:**
-- Real-time content filtering and fact-checking
-- Community guidelines enforcement
-- Harassment detection and prevention
-- Age-appropriate content filtering
-
-**Business Intelligence:**
-- Creator monetization tools and analytics
-- A/B testing platform for feature rollouts  
-- Business account features and advertising API
-- Advanced analytics dashboard for content creators
-
-**Emerging Features:**
-- AR/VR content support and viewing
-- Live audio/video streaming with interactive features
-- NFT and cryptocurrency integration
-- Metaverse and virtual world connectivity
-
----
-
-## Success Metrics:
-- **Feed Load Time**: <100ms for 95% of requests globally
-- **User Engagement**: >30 minutes average session time
-- **Content Delivery**: <200ms for media loading worldwide
-- **Real-time Messaging**: <500ms message delivery
-- **System Availability**: 99.99% uptime during peak usage
-- **User Growth**: Support 10% monthly active user growth
-- **Content Moderation**: <1% inappropriate content visible to users
-
-**🎯 This design demonstrates massive-scale social platforms, real-time systems, ML-driven personalization, global content distribution, and building systems that connect billions of people worldwide while maintaining performance and safety.**
-
+| Aspect | Key Takeaway |
+|--------|--------------|
+| **Likes table** | Separate table (not counter) for WHO liked, idempotency, unlike, analytics, notifications |
+| **Follows table** | Both follower_id and following_id for asymmetric relationship; feed = posts from following_id where follower_id = me |
+| **Media table** | Separate for one-post-many-media, reusability, different processing/storage |
+| **Feed strategies** | Strategy pattern: Chronological, Ranked, Trending interchangeable |
+| **Post events** | Observer: feed update, notification, trending react to create/like/comment |
+| **Fan-out** | Push for small followings; pull for celebrities; hybrid at threshold |
+| **Like/Unlike** | Idempotent via UNIQUE(user_id, post_id); insert = like, delete = unlike |
+| **SOLID** | SRP (each strategy/observer does one thing), OCP (add strategies without change), DIP (depend on abstractions) |

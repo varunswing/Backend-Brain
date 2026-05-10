@@ -172,7 +172,7 @@ CREATE TABLE seats (
     booking_id UUID,                      -- Set when seat is BOOKED
     
     created_at TIMESTAMP DEFAULT NOW(),
-
+    
     -- UNIQUE: Prevents two seat records for the same physical seat in the same event.
     -- WHY? If this constraint is missing, a bug could create duplicate seat records,
     -- leading to double-booking. This is our DATABASE-LEVEL safety net.

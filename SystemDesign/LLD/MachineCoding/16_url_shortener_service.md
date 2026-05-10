@@ -1,520 +1,607 @@
-# URL Shortener Service (TinyURL/Bit.ly) - System Design Interview
+# URL Shortener Service - LLD / Machine Coding Interview
 
-## Problem Statement
-*"Design a URL shortening service like TinyURL or Bit.ly that converts long URLs into short links, handles massive traffic with global distribution, and provides analytics for link performance."*
+## 1. Problem Statement
 
----
-
-## Phase 1: Requirements Clarification (8 minutes)
-
-### Questions I Would Ask:
-
-**Functional Requirements:**
-- "What's the core functionality needed?" → Shorten URLs, redirect to original URLs, custom aliases
-- "Do we need user accounts?" → Yes, for link management, analytics, and custom domains
-- "Should we provide analytics?" → Yes, click tracking, geographic data, referrer information
-- "Do we need custom short codes?" → Yes, users can specify custom aliases (bit.ly/custom-name)
-- "Should shortened URLs expire?" → Yes, configurable expiration (never, 30 days, 1 year)
-- "Do we need rate limiting?" → Yes, prevent spam and abuse
-
-**Non-Functional Requirements:**
-- "What's our scale expectation?" → 100M URLs shortened daily, 10B clicks/day
-- "Expected latency for redirects?" → <100ms globally (redirects are time-sensitive)
-- "Read/Write ratio?" → 100:1 (much more clicks than URL creations)
-- "Availability requirements?" → 99.99% uptime (links in emails/social media must work)
-- "Global distribution?" → Yes, CDN-like performance worldwide
-
-### Requirements Summary:
-- **Scale**: 100M URLs/day, 10B clicks/day, 100:1 read/write ratio
-- **Features**: URL shortening, custom aliases, analytics, expiration, user accounts
-- **Performance**: <100ms redirect latency globally, 99.99% availability
-- **Security**: Rate limiting, malicious URL detection, spam prevention
+Design a URL shortening service (like TinyURL or Bit.ly) that converts long URLs into compact short links, redirects users to the original destination, and tracks basic analytics. The system must handle hash collisions, support multiple ID generation strategies, and manage URL expiration policies.
 
 ---
 
-## Phase 2: Capacity Estimation (5 minutes)
+## 2. Requirements
 
-### Traffic Estimation:
-```
-Daily URL creations: 100M
-Daily clicks: 10B (100:1 ratio)
-Peak traffic multiplier: 3x during viral events
-Peak URL creations: 100M × 3 ÷ 86,400 = ~3.5K RPS
-Peak redirects: 10B × 3 ÷ 86,400 = ~350K RPS
-Global distribution: 350K RPS ÷ 5 regions = 70K RPS per region
-```
+### Functional Requirements
 
-### Storage Estimation:
-```
-URL records: 100M/day × 500 bytes × 365 × 5 years = 91TB
-Analytics data: 10B clicks/day × 200 bytes × 365 days = 730TB/year
-User data: 10M users × 1KB = 10GB
-Cache requirements: Hot URLs × 1KB = 1GB per cache node
-Total storage: ~1PB over 5 years (with replication)
-```
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| FR1 | Shorten a long URL and return a short code | Must |
+| FR2 | Redirect short code to original long URL (301/302) | Must |
+| FR3 | Support custom short codes (aliases) | Should |
+| FR4 | Track click count and access analytics | Should |
+| FR5 | Support URL expiration (never, time-based, access-count) | Should |
+| FR6 | User accounts for link management | Could |
+| FR7 | Custom domains per user | Could |
 
-### Short Code Analysis:
-```
-Characters available: [a-zA-Z0-9] = 62 characters
-6-character codes: 62^6 = 56B possible combinations
-7-character codes: 62^7 = 3.5T possible combinations
-Target: 7 characters for 100+ years of unique URLs
-```
+### Non-Functional Requirements
+
+| ID | Requirement | Target |
+|----|-------------|--------|
+| NFR1 | Redirect latency | < 100ms (P95) |
+| NFR2 | Shorten latency | < 200ms |
+| NFR3 | Handle hash collisions | Retry with alternative strategy |
+| NFR4 | Scalability | Read-heavy (100:1 read:write) |
+| NFR5 | Availability | 99.9% uptime |
 
 ---
 
-## Phase 3: High-Level Architecture (12 minutes)
+## 3. Database Design with Explanations
 
-### Step 1: Simple Architecture
-```
-[Client] → [Load Balancer] → [URL Service] → [Database] → [Cache]
-```
+### Why Base62 Encoding?
 
-### Step 2: Complete Architecture
+- **Character set**: `[a-zA-Z0-9]` = 62 chars → URL-safe, no special chars
+- **Compactness**: 6 chars = 62^6 ≈ 56B combinations; 7 chars ≈ 3.5T
+- **Readability**: Shorter than hex (Base16) for same numeric range
+- **Collision-free**: When backed by unique ID (counter/snowflake), no collisions
 
-```
-┌─────────────┐  ┌─────────────┐  ┌─────────────┐
-│Web Client   │  │Mobile Apps  │  │API Partners │
-│- Dashboard  │  │- Sharing    │  │- Integration│
-│- Analytics  │  │- Quick Link │  │- Bulk APIs  │
-└─────────────┘  └─────────────┘  └─────────────┘
-       │                │                │
-       └────────────────┼────────────────┘
-                        │
-                        ▼
-┌─────────────────────────────────────────────────┐
-│                  CDN / Edge                     │
-│- Cache hot redirects  - Geographic distribution │
-└─────────────────────────────────────────────────┘
-                        │
-                        ▼
-┌─────────────────────────────────────────────────┐
-│              Global Load Balancer               │
-│- DNS-based routing  - Health checks  - Failover│
-└─────────────────────────────────────────────────┘
-                        │
-        ┌───────────────┼───────────────┐
-        │               │               │
-        ▼               ▼               ▼
-┌──────────────┐ ┌──────────────┐ ┌──────────────┐
-│   Region 1   │ │   Region 2   │ │   Region 3   │
-│   (US-East)  │ │   (EU-West)  │ │  (AP-South)  │
-└──────────────┘ └──────────────┘ └──────────────┘
-        │
-        ▼
-┌─────────────────────────────────────────────────┐
-│              Regional Load Balancer             │
-│- Session affinity  - Circuit breakers          │
-└─────────────────────────────────────────────────┘
-                        │
-    ┌───────────────────┼───────────────────┐
-    │                   │                   │
-    ▼                   ▼                   ▼
-┌────────────┐ ┌────────────┐ ┌────────────┐
-│URL         │ │Analytics   │ │User        │
-│Service     │ │Service     │ │Service     │
-│            │ │            │ │            │
-│- Shorten   │ │- Track     │ │- Auth      │
-│- Redirect  │ │- Report    │ │- Dashboard │
-│- Validate  │ │- Stats     │ │- Settings  │
-└────────────┘ └────────────┘ └────────────┘
-    │                   │                   │
-    └───────────────────┼───────────────────┘
-                        │
-    ┌───────────────────┼───────────────────┐
-    │                   │                   │
-    ▼                   ▼                   ▼
-┌────────────┐ ┌────────────┐ ┌────────────┐
-│Code        │ │Cache       │ │Queue       │
-│Generator   │ │Service     │ │Service     │
-│            │ │            │ │            │
-│- Base62    │ │- Redis     │ │- Analytics │
-│- Custom    │ │- Bloom     │ │- Cleanup   │
-│- Counter   │ │- Hot URLs  │ │- Jobs      │
-└────────────┘ └────────────┘ └────────────┘
-                        │
-                        ▼
-┌─────────────────────────────────────────────────┐
-│                 Data Layer                      │
-│                                                 │
-│ ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────┐   │
-│ │Cassandra│  │  Redis  │  │  Kafka  │  │ S3  │   │
-│ │         │  │         │  │         │  │     │   │
-│ │- URLs   │  │- Cache  │  │- Events │  │-Logs│   │
-│ │- Clicks │  │- Counter│  │- Metrics│  │-Backup│ │
-│ │- Users  │  │- Bloom  │  │- Stream │  │     │   │
-│ └─────────┘  └─────────┘  └─────────┘  └─────┘   │
-└─────────────────────────────────────────────────┘
-```
+### Why Separate Analytics Table?
 
-### Key Components:
-- **URL Service**: Core shortening and redirect logic
-- **Code Generator**: Base62 encoding and collision handling
-- **Analytics Service**: Click tracking and reporting
-- **Cache Service**: Multi-layer caching for performance
-- **Queue Service**: Asynchronous processing for analytics
+- **Write amplification**: Clicks far exceed creations (100:1); separate table avoids locking main `urls` table
+- **Query isolation**: Analytics queries (aggregations, time-series) don't slow redirect lookups
+- **Retention**: Can archive/delete old analytics without touching URL mappings
+- **Schema flexibility**: Analytics schema can evolve independently (geo, device, referrer)
 
----
-
-## Phase 4: Database Design (8 minutes)
-
-### Core Entities:
-- URLs (shortened mappings), Users (accounts), Analytics (click data)
-
-### Cassandra Schema (for massive scale):
+### SQL Schema
 
 ```sql
--- URLs table (partitioned by short_code for even distribution)
+-- WHY: Core mapping of short_code → long_url. Primary lookup for redirects.
+-- WHY short_code PK: Direct lookup by short code (most common operation).
 CREATE TABLE urls (
-    short_code TEXT PRIMARY KEY,      -- 7-character base62 code
-    long_url TEXT NOT NULL,
-    user_id UUID,                     -- NULL for anonymous
-    
-    -- Metadata
-    title TEXT,                       -- Page title (optional)
-    domain TEXT,                      -- extracted from long_url
-    is_custom BOOLEAN DEFAULT false,  -- Custom alias vs generated
-    
-    -- Configuration
-    expires_at TIMESTAMP,             -- NULL means never expires
-    is_active BOOLEAN DEFAULT true,   -- Can be disabled
-    password_hash TEXT,               -- Optional password protection
-    
-    -- Tracking
-    click_count COUNTER DEFAULT 0,    -- Real-time click count
-    created_at TIMESTAMP DEFAULT NOW(),
-    last_accessed TIMESTAMP,
-    
-    -- Security
-    is_malicious BOOLEAN DEFAULT false,
-    blocked_reason TEXT
-);
+    id              BIGINT AUTO_INCREMENT PRIMARY KEY,  -- WHY: Surrogate key for FK, internal use
+    short_code      VARCHAR(20) NOT NULL UNIQUE,        -- WHY UNIQUE: One short code maps to one URL
+    long_url        TEXT NOT NULL,                      -- Original URL (TEXT for long URLs)
+    user_id         BIGINT NULL,                        -- WHY NULL: Anonymous URLs allowed
+    status          VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',  -- ACTIVE, EXPIRED, DISABLED
+    expires_at      TIMESTAMP NULL,                     -- NULL = never expires
+    access_count_limit INT NULL,                        -- Expire after N clicks (NULL = no limit)
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
--- Users table
-CREATE TABLE users (
-    user_id UUID PRIMARY KEY,
-    email TEXT UNIQUE NOT NULL,
-    username TEXT UNIQUE,
-    password_hash TEXT NOT NULL,
-    
-    -- Account info
-    account_type TEXT DEFAULT 'free', -- free, premium, enterprise
-    custom_domain TEXT,               -- pro.ly instead of bit.ly
-    
-    -- Limits and usage
-    monthly_url_limit INTEGER DEFAULT 1000,
-    urls_created_this_month COUNTER DEFAULT 0,
-    
-    -- Settings
-    default_expiration TEXT DEFAULT 'never',
-    analytics_enabled BOOLEAN DEFAULT true,
-    
-    created_at TIMESTAMP DEFAULT NOW(),
-    last_login TIMESTAMP
-);
+    -- WHY FK: Referential integrity; cascade rules for user deletion
+    CONSTRAINT fk_urls_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
+    INDEX idx_short_code (short_code),                  -- WHY: Primary lookup (may be covered by UNIQUE)
+    INDEX idx_user_created (user_id, created_at DESC)   -- WHY: User dashboard "my links" queries
+) ENGINE=InnoDB;
 
--- User URLs index (for dashboard)
-CREATE TABLE user_urls (
-    user_id UUID,
-    created_at TIMESTAMP,
-    short_code TEXT,
-    long_url TEXT,
-    click_count COUNTER DEFAULT 0,
-    
-    PRIMARY KEY (user_id, created_at, short_code)
-) WITH CLUSTERING ORDER BY (created_at DESC);
-
--- Analytics events (time-series data)
+-- WHY: Decoupled analytics for high-volume click tracking.
+-- WHY separate table: Avoids write contention on urls; enables time-series queries.
 CREATE TABLE url_analytics (
-    short_code TEXT,
-    click_date DATE,                  -- Partition by date for time-series
-    click_hour INTEGER,               -- 0-23 for hourly stats
-    click_id UUID,
-    
-    -- Click details
-    clicked_at TIMESTAMP,
-    ip_address INET,
-    user_agent TEXT,
-    referer TEXT,
-    
-    -- Geographic data
-    country TEXT,
-    region TEXT,
-    city TEXT,
-    
-    -- Computed fields
-    device_type TEXT,                 -- mobile, desktop, tablet
-    browser TEXT,                     -- chrome, firefox, safari
-    os TEXT,                          -- windows, macos, android
-    
-    PRIMARY KEY ((short_code, click_date), click_hour, click_id)
-) WITH CLUSTERING ORDER BY (click_hour DESC, click_id DESC);
+    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+    short_code      VARCHAR(20) NOT NULL,
+    accessed_at     TIMESTAMP NOT NULL,
+    ip_address      VARCHAR(45) NULL,                   -- IPv6 support
+    user_agent      VARCHAR(512) NULL,
+    referer         VARCHAR(512) NULL,
 
--- Daily aggregated stats (for fast analytics)
-CREATE TABLE daily_stats (
-    short_code TEXT,
-    stat_date DATE,
-    
-    -- Aggregated counts
-    total_clicks COUNTER,
-    unique_visitors COUNTER,          -- Approximated using HyperLogLog
-    
-    -- Top referrers (JSON)
-    top_referrers TEXT,               -- JSON: {"google.com": 1500, "twitter.com": 800}
-    top_countries TEXT,               -- JSON: {"US": 2000, "UK": 500}
-    top_devices TEXT,                 -- JSON: {"mobile": 1800, "desktop": 700}
-    
-    PRIMARY KEY (short_code, stat_date)
-) WITH CLUSTERING ORDER BY (stat_date DESC);
+    -- WHY FK: Ensure we only track valid short codes; optional for performance at scale
+    CONSTRAINT fk_analytics_url FOREIGN KEY (short_code) REFERENCES urls(short_code) ON DELETE CASCADE,
+    INDEX idx_short_code_date (short_code, accessed_at),  -- WHY: Time-range analytics per URL
+    INDEX idx_accessed_at (accessed_at)                  -- WHY: Retention/cleanup by date
+) ENGINE=InnoDB;
+
+-- WHY: User accounts for link ownership, rate limits, custom domains.
+CREATE TABLE users (
+    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+    email           VARCHAR(255) NOT NULL UNIQUE,
+    password_hash   VARCHAR(255) NOT NULL,
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_email (email)
+) ENGINE=InnoDB;
+
+-- WHY: Allow users to use their own domain (e.g., go.company.com instead of bit.ly).
+-- WHY separate table: Many-to-one (many domains per user); flexible for enterprise.
+CREATE TABLE custom_domains (
+    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id         BIGINT NOT NULL,
+    domain          VARCHAR(255) NOT NULL,               -- e.g., go.company.com
+    is_verified     BOOLEAN DEFAULT FALSE,              -- DNS/ownership verification
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT fk_custom_domains_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE KEY uk_domain (domain),                      -- WHY: One domain per account
+    INDEX idx_user_id (user_id)
+) ENGINE=InnoDB;
 ```
-
-### Redis Cache Strategy:
-
-```javascript
-// Hot URLs cache (most accessed short codes)
-"url:{short_code}": {
-  "long_url": "https://example.com/very/long/path...",
-  "expires_at": 1735689600,          // NULL if never expires
-  "click_count": 1250000,
-  "is_active": true,
-  "ttl": 3600                        // 1 hour cache
-}
-
-// Bloom filter for existing short codes (prevents database lookups)
-"bloom_filter:existing_codes": 
-// Bloom filter with 1% false positive rate for 100B codes
-
-// Rate limiting per IP
-"rate_limit:ip:192.168.1.100": {
-  "requests": 95,
-  "window_start": 1704110400,
-  "ttl": 3600                        // Reset hourly
-}
-
-// User rate limiting
-"rate_limit:user:uuid": {
-  "urls_today": 45,
-  "clicks_today": 2500,
-  "ttl": 86400                       // Reset daily
-}
-
-// Analytics buffer (before writing to Cassandra)
-"analytics_buffer:{short_code}:{hour}": [
-  {"click_id": "uuid", "ip": "1.1.1.1", "country": "US", "timestamp": 1704110450},
-  // ... more click events
-]
-
-// Short code counter (for generating sequential codes)
-"counter:short_code": 15234567890   // Incremental counter for base62 conversion
-
-// Recent popular URLs (for trending analysis)
-"trending_urls": [
-  {"short_code": "abc123", "clicks_last_hour": 50000},
-  {"short_code": "def456", "clicks_last_hour": 35000}
-]
-```
-
-### Design Decisions:
-- **Cassandra**: Handles massive write volume and horizontal scaling
-- **Partition by short_code**: Even distribution across nodes
-- **Time-series analytics**: Efficient querying by date ranges
-- **Counter columns**: Real-time click count updates
-- **Bloom filters**: Reduce database lookups for non-existent URLs
 
 ---
 
-## Phase 5: Critical Flow - URL Shortening & Redirect (8 minutes)
+## 4. Design Patterns
 
-### Most Critical Flow: Shorten URL
+| Pattern | Where Used | Purpose |
+|---------|------------|---------|
+| **Strategy** | `IdGenerationStrategy` (Base62, MD5, Snowflake, NanoId) | Swap ID generation algorithm without changing client code; supports collision fallback |
+| **Strategy** | `ExpirationStrategy` (Never, TimeBased, AccessCount) | Encapsulate expiration logic; add new policies without modifying core service |
+| **Factory** | `UrlShortenerFactory` | Create configured `UrlShortenerService` with injected strategies; centralize wiring |
+| **Observer** | `UrlAccessObserver` (analytics, click count) | Decouple redirect logic from analytics; add listeners without changing redirect flow |
+| **Singleton** | Cache / ID generator (e.g., Snowflake) | Single instance for counter/state to avoid duplicates |
 
-**1. URL Shortening Request**
-```
-POST /api/shorten
-{
-  "long_url": "https://example.com/very/long/path/to/article?param=value",
-  "custom_alias": null,              // Optional custom short code
-  "expires_at": null,                // Optional expiration
-  "password": null                   // Optional password protection
+---
+
+## 5. SOLID Principles
+
+| Principle | Application |
+|-----------|-------------|
+| **S**ingle Responsibility | `UrlShortenerService` orchestrates; `IdGenerationStrategy` generates IDs; `ExpirationStrategy` checks expiry; `UrlAccessObserver` tracks analytics |
+| **O**pen/Closed | New ID strategies (e.g., UUID) or expiration policies added by implementing interfaces, not modifying existing code |
+| **L**iskov Substitution | Any `IdGenerationStrategy` or `ExpirationStrategy` implementation can replace another without breaking behavior |
+| **I**nterface Segregation | Small interfaces: `IdGenerationStrategy`, `ExpirationStrategy`, `UrlAccessObserver` — clients depend only on what they need |
+| **D**ependency Inversion | `UrlShortenerService` depends on abstractions (interfaces), not concrete ID/expiration implementations |
+
+---
+
+## 6. Code Implementation in Java
+
+### 6.1 Enums
+
+```java
+/**
+ * WHY Enum: Type-safe status; prevents invalid values.
+ * ACTIVE = redirect works; EXPIRED = past expiry; DISABLED = manually turned off.
+ */
+public enum UrlStatus {
+    ACTIVE,
+    EXPIRED,
+    DISABLED
 }
 ```
 
-**2. URL Validation & Processing**
-```
-URL Service processing:
-1. Validate long URL format and reachability
-2. Check for malicious URLs using security service
-3. Extract domain and fetch page title (optional)
-4. Check user rate limits (if authenticated)
-5. Normalize URL (remove tracking parameters, normalize case)
+### 6.2 Models with Encapsulation
+
+```java
+import java.time.Instant;
+
+/**
+ * WHY encapsulation: ShortUrl owns expiry logic; callers use isExpired() instead of
+ * duplicating checks. Expiry can be time-based OR access-count-based.
+ */
+public class ShortUrl {
+    private final String shortCode;
+    private final String longUrl;
+    private final Long userId;
+    private UrlStatus status;
+    private final Instant expiresAt;
+    private final Integer accessCountLimit;
+    private int accessCount;
+    private final Instant createdAt;
+
+    public ShortUrl(String shortCode, String longUrl, Long userId,
+                    Instant expiresAt, Integer accessCountLimit, int accessCount, Instant createdAt) {
+        this.shortCode = shortCode;
+        this.longUrl = longUrl;
+        this.userId = userId;
+        this.status = UrlStatus.ACTIVE;
+        this.expiresAt = expiresAt;
+        this.accessCountLimit = accessCountLimit;
+        this.accessCount = accessCount;
+        this.createdAt = createdAt;
+    }
+
+    public String getShortCode() { return shortCode; }
+    public String getLongUrl() { return longUrl; }
+    public Long getUserId() { return userId; }
+    public UrlStatus getStatus() { return status; }
+    public void setStatus(UrlStatus status) { this.status = status; }
+    public int getAccessCount() { return accessCount; }
+
+    /** WHY: Centralized expiry check — supports both time and access-count. */
+    public boolean isExpired(ExpirationStrategy strategy) {
+        return strategy.isExpired(this);
+    }
+
+    public void incrementAccessCount() {
+        this.accessCount++;
+    }
+
+    public Instant getExpiresAt() { return expiresAt; }
+    public Integer getAccessCountLimit() { return accessCountLimit; }
+}
 ```
 
-**3. Short Code Generation**
-```
-Code Generator Service:
-1. If custom alias requested:
-   - Check availability using Bloom filter
-   - If potentially available, check Cassandra
-   - If taken, return error
-2. If auto-generated:
-   - Get next counter value from Redis
-   - Convert to base62: counter → short_code
-   - Ensure 7-character minimum length
-3. Final collision check and retry if needed
+### 6.3 Strategy: IdGenerationStrategy
+
+```java
+/**
+ * STRATEGY PATTERN: Swap ID generation algorithms.
+ * WHY: Different strategies for scale (Snowflake), collision resistance (NanoId),
+ * or determinism (MD5 for same URL → same short code).
+ */
+public interface IdGenerationStrategy {
+    String generate(String longUrl, String customAlias);
+}
+
+/** WHY Base62: Compact, URL-safe. Uses counter/snowflake for uniqueness. */
+public class Base62EncodingStrategy implements IdGenerationStrategy {
+    private static final String BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+    @Override
+    public String generate(String longUrl, String customAlias) {
+        if (customAlias != null && !customAlias.isEmpty()) return customAlias;
+        long id = System.nanoTime(); // In production: use distributed counter or Snowflake
+        return toBase62(id);
+    }
+
+    /** WHY static: Reusable by MD5HashStrategy, SnowflakeIdStrategy. */
+    public static String toBase62(long num) {
+        if (num == 0) return String.valueOf(BASE62.charAt(0));
+        StringBuilder sb = new StringBuilder();
+        while (num > 0) {
+            sb.append(BASE62.charAt((int) (num % 62)));
+            num /= 62;
+        }
+        return sb.reverse().toString();
+    }
+}
+
+/** WHY MD5: Same long URL → same short code (idempotent). Collision risk; use with retry. */
+public class MD5HashStrategy implements IdGenerationStrategy {
+    @Override
+    public String generate(String longUrl, String customAlias) {
+        if (customAlias != null && !customAlias.isEmpty()) return customAlias;
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("MD5");
+            byte[] hash = md.digest(longUrl.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            long num = Math.abs(java.nio.ByteBuffer.wrap(hash).getLong());
+            String encoded = Base62EncodingStrategy.toBase62(num);
+            return encoded.length() >= 7 ? encoded.substring(0, 7) : encoded;
+        } catch (Exception e) { throw new RuntimeException(e); }
+    }
+}
+
+/** WHY Snowflake: Distributed unique IDs; no collision. */
+public class SnowflakeIdStrategy implements IdGenerationStrategy {
+    private long lastTimestamp = -1L;
+    private long sequence = 0L;
+
+    @Override
+    public String generate(String longUrl, String customAlias) {
+        if (customAlias != null && !customAlias.isEmpty()) return customAlias;
+        long id = nextId();
+        return Base62EncodingStrategy.toBase62(id);
+    }
+
+    private synchronized long nextId() {
+        long ts = System.currentTimeMillis();
+        if (ts == lastTimestamp) sequence++;
+        else { lastTimestamp = ts; sequence = 0; }
+        return (ts << 22) | sequence;
+    }
+}
+
+/** WHY NanoId: Cryptographically random; very low collision probability. */
+public class NanoIdStrategy implements IdGenerationStrategy {
+    private static final String ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+    @Override
+    public String generate(String longUrl, String customAlias) {
+        if (customAlias != null && !customAlias.isEmpty()) return customAlias;
+        StringBuilder sb = new StringBuilder(7);
+        java.util.Random r = new java.util.Random();
+        for (int i = 0; i < 7; i++) {
+            sb.append(ALPHABET.charAt(r.nextInt(62)));
+        }
+        return sb.toString();
+    }
+}
 ```
 
-**4. Database Storage & Caching**
-```
-Data persistence:
-1. Insert URL record into Cassandra
-2. Update user_urls table if user is authenticated
-3. Cache URL mapping in Redis with TTL
-4. Add short_code to Bloom filter
-5. Return shortened URL to user
-```
+### 6.4 Strategy: ExpirationStrategy
 
-### Most Critical Flow: URL Redirect
+```java
+/**
+ * STRATEGY PATTERN: Encapsulate expiration rules.
+ * WHY: Add NeverExpire, TimeBased, AccessCount without changing ShortUrl or service.
+ */
+public interface ExpirationStrategy {
+    boolean isExpired(ShortUrl url);
+}
 
-**1. Redirect Request Processing**
-```
-GET /{short_code}
-User clicks: https://tiny.ly/abc123
-```
+public class NeverExpireStrategy implements ExpirationStrategy {
+    @Override
+    public boolean isExpired(ShortUrl url) {
+        return url.getStatus() == UrlStatus.DISABLED;
+    }
+}
 
-**2. Cache-First Lookup**
-```
-URL Service redirect:
-1. Check Redis cache for short_code mapping
-2. If cache hit:
-   - Increment click counter asynchronously
-   - Return 301/302 redirect immediately
-3. If cache miss:
-   - Query Cassandra for URL mapping
-   - Cache result in Redis
-   - Return redirect or 404
-```
+public class TimeBasedExpiryStrategy implements ExpirationStrategy {
+    @Override
+    public boolean isExpired(ShortUrl url) {
+        if (url.getStatus() == UrlStatus.DISABLED) return true;
+        return url.getExpiresAt() != null && Instant.now().isAfter(url.getExpiresAt());
+    }
+}
 
-**3. Analytics Tracking (Async)**
-```
-Analytics Service (non-blocking):
-1. Extract user information:
-   - IP address, User-Agent, Referer
-   - Geographic data from IP lookup
-   - Device/browser detection
-2. Buffer analytics event in Redis
-3. Background job writes to Cassandra analytics tables
-4. Update real-time counters
+public class AccessCountExpiryStrategy implements ExpirationStrategy {
+    @Override
+    public boolean isExpired(ShortUrl url) {
+        if (url.getStatus() == UrlStatus.DISABLED) return true;
+        Integer limit = url.getAccessCountLimit();
+        return limit != null && url.getAccessCount() >= limit;
+    }
+}
 ```
 
-**4. Edge Cases Handling**
+### 6.5 Observer: UrlAccessObserver
+
+```java
+/**
+ * OBSERVER PATTERN: Decouple redirect from analytics/click counting.
+ * WHY: Add new observers (fraud detection, logging) without modifying redirect logic.
+ */
+public interface UrlAccessObserver {
+    void onUrlAccessed(ShortUrl url, String ipAddress, String userAgent, String referer);
+}
+
+/** Observer: Persist analytics events. */
+public class AnalyticsTrackingObserver implements UrlAccessObserver {
+    private final UrlAnalyticsRepository analyticsRepo;
+
+    public AnalyticsTrackingObserver(UrlAnalyticsRepository analyticsRepo) {
+        this.analyticsRepo = analyticsRepo;
+    }
+
+    @Override
+    public void onUrlAccessed(ShortUrl url, String ipAddress, String userAgent, String referer) {
+        analyticsRepo.recordAccess(url.getShortCode(), ipAddress, userAgent, referer);
+    }
+}
+
+/** Observer: Increment click count (can be async in production). */
+public class ClickCountingObserver implements UrlAccessObserver {
+    private final UrlRepository urlRepo;
+
+    public ClickCountingObserver(UrlRepository urlRepo) {
+        this.urlRepo = urlRepo;
+    }
+
+    @Override
+    public void onUrlAccessed(ShortUrl url, String ipAddress, String userAgent, String referer) {
+        url.incrementAccessCount();
+        urlRepo.updateAccessCount(url.getShortCode(), url.getAccessCount());
+    }
+}
 ```
-Special scenarios:
-1. Expired URLs: Return custom expiration page
-2. Password-protected: Redirect to password form
-3. Malicious URLs: Block and show warning
-4. High-traffic URLs: Serve from CDN edge cache
+
+### 6.6 Factory: UrlShortenerFactory
+
+```java
+/**
+ * FACTORY PATTERN: Centralize creation of UrlShortenerService with correct dependencies.
+ * WHY: Single place to wire strategies and observers; easy to create different configs.
+ */
+public class UrlShortenerFactory {
+    public static UrlShortenerService createDefault() {
+        IdGenerationStrategy idStrategy = new Base62EncodingStrategy();
+        ExpirationStrategy expiryStrategy = new TimeBasedExpiryStrategy();
+        List<UrlAccessObserver> observers = List.of(
+            new ClickCountingObserver(new UrlRepositoryImpl()),
+            new AnalyticsTrackingObserver(new UrlAnalyticsRepositoryImpl())
+        );
+        return new UrlShortenerService(idStrategy, expiryStrategy, observers, new UrlRepositoryImpl());
+    }
+
+    public static UrlShortenerService createWithCollisionFallback() {
+        // Primary: Base62; fallback: NanoId on collision
+        IdGenerationStrategy idStrategy = new CollisionAwareIdStrategy(
+            new Base62EncodingStrategy(),
+            new NanoIdStrategy()
+        );
+        return createWithStrategy(idStrategy);
+    }
+
+    private static UrlShortenerService createWithStrategy(IdGenerationStrategy idStrategy) {
+        return new UrlShortenerService(idStrategy,
+            new TimeBasedExpiryStrategy(),
+            List.of(new ClickCountingObserver(new UrlRepositoryImpl())),
+            new UrlRepositoryImpl());
+    }
+}
 ```
 
-### Technical Challenges:
+### 6.7 UrlShortenerService (Orchestrator with DI)
 
-**Base62 Encoding:**
-- "Convert incremental counter to base62 for short codes"
-- "Handle collision detection and resolution"
-- "Ensure uniform distribution across character space"
+```java
+import java.util.List;
 
-**Cache Strategy:**
-- "Multi-layer caching: CDN → Redis → Database"
-- "Cache invalidation for expired or deleted URLs"
-- "Bloom filter optimization for non-existent URLs"
+/**
+ * Orchestrator with Dependency Injection.
+ * WHY DI: Testable (mock repos/strategies); Open/Closed for new strategies.
+ */
+public class UrlShortenerService {
+    private final IdGenerationStrategy idStrategy;
+    private final ExpirationStrategy expirationStrategy;
+    private final List<UrlAccessObserver> observers;
+    private final UrlRepository urlRepo;
+    private final int maxCollisionRetries = 3;
 
-**Analytics at Scale:**
-- "Async processing to not slow down redirects"
-- "Batch writing to reduce database load"
-- "Real-time vs batch analytics trade-offs"
+    public UrlShortenerService(IdGenerationStrategy idStrategy,
+                               ExpirationStrategy expirationStrategy,
+                               List<UrlAccessObserver> observers,
+                               UrlRepository urlRepo) {
+        this.idStrategy = idStrategy;
+        this.expirationStrategy = expirationStrategy;
+        this.observers = observers;
+        this.urlRepo = urlRepo;
+    }
 
-**Global Distribution:**
-- "Consistent hashing for cache distribution"
-- "Regional database replication"
-- "CDN integration for hot URLs"
+    /**
+     * Shorten URL with hash collision handling.
+     * WHY retry: MD5/Base62 can collide; retry with new ID or fallback strategy.
+     */
+    public String shorten(String longUrl, String customAlias, Long userId) {
+        validateUrl(longUrl);
+        String shortCode = null;
+        for (int i = 0; i < maxCollisionRetries; i++) {
+            shortCode = idStrategy.generate(longUrl, customAlias);
+            if (urlRepo.findByShortCode(shortCode).isEmpty()) {
+                break;
+            }
+            if (customAlias != null) {
+                throw new IllegalArgumentException("Custom alias already taken: " + customAlias);
+            }
+            shortCode = null; // Collision; retry
+        }
+        if (shortCode == null) throw new RuntimeException("Failed to generate unique short code after retries");
+
+        ShortUrl shortUrl = new ShortUrl(shortCode, longUrl, userId, null, null, 0, java.time.Instant.now());
+        urlRepo.save(shortUrl);
+        return shortCode;
+    }
+
+    /**
+     * Redirect: lookup, check expiry, notify observers, return long URL.
+     * WHY cache: In production, cache shortCode→longUrl for <100ms latency.
+     */
+    public String redirect(String shortCode, String ipAddress, String userAgent, String referer) {
+        ShortUrl url = urlRepo.findByShortCode(shortCode)
+            .orElseThrow(() -> new IllegalArgumentException("Short code not found: " + shortCode));
+
+        if (url.isExpired(expirationStrategy)) {
+            throw new IllegalStateException("URL expired or disabled");
+        }
+
+        // Notify observers (analytics, click count) — can be async
+        for (UrlAccessObserver o : observers) {
+            o.onUrlAccessed(url, ipAddress, userAgent, referer);
+        }
+
+        return url.getLongUrl();
+    }
+
+    private void validateUrl(String longUrl) {
+        if (longUrl == null || longUrl.isBlank()) throw new IllegalArgumentException("URL cannot be empty");
+        if (!longUrl.startsWith("http://") && !longUrl.startsWith("https://")) {
+            throw new IllegalArgumentException("URL must start with http:// or https://");
+        }
+    }
+}
+```
+
+### 6.8 Collision Handling & Redirect Caching
+
+```java
+/**
+ * Hash collision handling: Primary strategy + fallback.
+ * WHY: Base62/MD5 can collide; NanoId/Snowflake as fallback ensures success.
+ */
+public class CollisionAwareIdStrategy implements IdGenerationStrategy {
+    private final IdGenerationStrategy primary;
+    private final IdGenerationStrategy fallback;
+
+    public CollisionAwareIdStrategy(IdGenerationStrategy primary, IdGenerationStrategy fallback) {
+        this.primary = primary;
+        this.fallback = fallback;
+    }
+
+    @Override
+    public String generate(String longUrl, String customAlias) {
+        return primary.generate(longUrl, customAlias);
+    }
+
+    public String generateWithFallback(String longUrl, String customAlias, boolean collisionDetected) {
+        return collisionDetected ? fallback.generate(longUrl, customAlias) : primary.generate(longUrl, customAlias);
+    }
+}
+```
+
+```java
+/**
+ * Redirect caching: In-memory or Redis cache for shortCode → longUrl.
+ * WHY: Redirects are read-heavy; cache reduces DB load and latency to <100ms.
+ */
+public class CachedUrlRepository implements UrlRepository {
+    private final UrlRepository delegate;
+    private final java.util.Map<String, ShortUrl> cache = new java.util.concurrent.ConcurrentHashMap<>();
+
+    public CachedUrlRepository(UrlRepository delegate) {
+        this.delegate = delegate;
+    }
+
+    @Override
+    public java.util.Optional<ShortUrl> findByShortCode(String shortCode) {
+        return java.util.Optional.ofNullable(cache.computeIfAbsent(shortCode,
+            k -> delegate.findByShortCode(k).orElse(null)));
+    }
+
+    @Override
+    public void save(ShortUrl url) {
+        delegate.save(url);
+        cache.put(url.getShortCode(), url);
+    }
+}
+```
+
+### 6.9 Repository Interfaces (Stubs)
+
+```java
+public interface UrlRepository {
+    java.util.Optional<ShortUrl> findByShortCode(String shortCode);
+    void save(ShortUrl url);
+    void updateAccessCount(String shortCode, int count);
+}
+
+public interface UrlAnalyticsRepository {
+    void recordAccess(String shortCode, String ip, String userAgent, String referer);
+}
+```
 
 ---
 
-## Phase 6: Scaling & Bottlenecks (2 minutes)
+## 7. Edge Cases & Tests
 
-### Main Bottlenecks:
-1. **Database writes**: 100M URL creations + 10B click analytics/day
-2. **Cache memory**: Hot URLs and analytics data
-3. **Code generation**: Collision handling at scale
-4. **Global latency**: <100ms redirect requirement worldwide
+| # | Edge Case | Expected Behavior | Test |
+|---|-----------|-------------------|------|
+| 1 | Empty or invalid URL | Reject with `IllegalArgumentException` | `shorten("", null, null)` → exception |
+| 2 | Custom alias already taken | Reject with clear error | `shorten(url, "taken", userId)` when "taken" exists → exception |
+| 3 | Hash collision (same short code generated) | Retry with new ID or fallback strategy | Mock repo to return existing for first 2 calls → third succeeds |
+| 4 | Expired URL redirect | Return error / custom expiry page | `redirect("expired_code")` → exception or 410 Gone |
+| 5 | Access-count limit reached | Treat as expired on next redirect | Create URL with limit=1; redirect twice → second fails |
+| 6 | Short code not found | 404 or `IllegalArgumentException` | `redirect("nonexistent")` → exception |
+| 7 | Null or blank custom alias | Use auto-generated code | `shorten(url, null, userId)` → valid short code |
+| 8 | Concurrent shorten of same long URL | Both succeed with different short codes | Two threads `shorten(sameUrl)` → two distinct codes |
 
-### Scaling Solutions:
+### Sample Test Snippets
 
-**Database Scaling:**
-```
-- Cassandra cluster: Horizontal scaling for writes
-- Consistent hashing: Even data distribution
-- Replication factor: 3x for high availability
-- Batch analytics: Reduce write amplification
-```
+```java
+@Test
+void shorten_rejectsEmptyUrl() {
+    assertThrows(IllegalArgumentException.class, () -> service.shorten("", null, null));
+}
 
-**Caching Optimization:**
-```
-- CDN integration: Cache popular redirects at edge
-- Redis clustering: Distribute cache load
-- Intelligent TTL: Longer cache for stable URLs
-- Bloom filter: Reduce negative cache misses
-```
+@Test
+void redirect_throwsWhenExpired() {
+    ShortUrl url = createExpiredUrl();
+    when(repo.findByShortCode("x")).thenReturn(Optional.of(url));
+    assertThrows(IllegalStateException.class, () -> service.redirect("x", null, null, null));
+}
 
-**Code Generation:**
+@Test
+void observersNotifiedOnRedirect() {
+    UrlAccessObserver mockObserver = mock(UrlAccessObserver.class);
+    service = new UrlShortenerService(idStrategy, expiryStrategy, List.of(mockObserver), repo);
+    when(repo.findByShortCode("abc")).thenReturn(Optional.of(validUrl));
+    service.redirect("abc", "1.2.3.4", "Mozilla", "https://google.com");
+    verify(mockObserver).onUrlAccessed(any(), eq("1.2.3.4"), eq("Mozilla"), eq("https://google.com"));
+}
 ```
-- Pre-generate code batches: Avoid real-time collisions
-- Distributed counters: Multiple counter ranges per service
-- Base62 optimization: Faster encoding algorithms
-- Custom algorithm: Base62 + timestamp for uniqueness
-```
-
-**Global Performance:**
-```
-- Multi-region deployment: Reduce latency
-- DNS geo-routing: Route to nearest region
-- Edge caching: Cache hot URLs globally
-- Regional databases: Local data for faster access
-```
-
-### Trade-offs:
-- **Consistency vs Performance**: Eventually consistent analytics vs real-time accuracy
-- **Cache vs Database**: Memory cost vs query performance
-- **Custom URLs vs Scale**: Collision checking overhead vs user experience
-- **Analytics Depth vs Speed**: Detailed tracking vs redirect latency
 
 ---
 
-## Advanced Features:
+## 8. Summary
 
-**Security & Abuse Prevention:**
-- Rate limiting per IP and user
-- Malicious URL detection using ML
-- CAPTCHA for suspicious traffic
-- URL expiration and password protection
-
-**Analytics & Intelligence:**
-- Real-time click heatmaps
-- Geographic analytics with maps
-- A/B testing for different short codes
-- Click fraud detection
-
-**Enterprise Features:**
-- Custom domains (customer.ly instead of tiny.ly)
-- API access with authentication
-- Bulk URL shortening
-- Advanced analytics dashboard
-
----
-
-## Success Metrics:
-- **Redirect Latency**: <100ms globally (P95)
-- **URL Creation Rate**: 100M URLs/day with <200ms response
-- **Cache Hit Rate**: >95% for redirect requests
-- **Availability**: 99.99% uptime across all regions
-- **Analytics Accuracy**: <1% error in click counting
-
-**🎯 This design demonstrates massive-scale read-heavy systems, global distribution, caching strategies, and building internet-scale infrastructure that serves billions of requests daily.**
+| Aspect | Key Takeaway |
+|--------|--------------|
+| **Problem** | Shorten URLs, redirect, analytics; handle collisions and expiration |
+| **DB** | `urls` (mapping), `url_analytics` (clicks), `users`, `custom_domains`; Base62 for compact codes; separate analytics for write isolation |
+| **Patterns** | Strategy (ID gen, expiration), Factory (service wiring), Observer (analytics) |
+| **SOLID** | SRP per component; O/C via interfaces; DIP via constructor injection |
+| **Collision** | Retry + fallback strategy (e.g., NanoId) when primary collides |
+| **Performance** | Cache shortCode→longUrl for redirects; async analytics |
+| **Tests** | Invalid URL, alias taken, collision, expired, not found, concurrent shorten |

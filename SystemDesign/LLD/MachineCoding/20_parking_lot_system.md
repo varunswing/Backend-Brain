@@ -1062,7 +1062,7 @@ public class ParkingService {
             .spot(spot)
             .entryTime(LocalDateTime.now())
             .hourlyRate(getHourlyRate(lot, vehicle))
-            .build();
+                    .build();
 
         // STEP 4: Store active ticket for later retrieval on exit
         activeTickets.put(ticket.getTicketId(), ticket);

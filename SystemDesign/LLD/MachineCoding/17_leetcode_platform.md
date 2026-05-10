@@ -1,995 +1,819 @@
-# LeetCode Platform - Low Level Design
+# LeetCode Platform - LLD / Machine Coding Interview Study Document
 
-## 1. Requirements Clarification
+---
+
+## 1. Problem Statement
+
+Design a coding platform (like LeetCode) where users can solve algorithmic problems by submitting code in multiple languages. The system must execute user code in a sandboxed environment, run it against predefined test cases, enforce time and memory limits, and determine pass/fail verdicts. Support both practice mode (binary scoring) and contest mode (time-penalty scoring with leaderboards).
+
+---
+
+## 2. Requirements
 
 ### Functional Requirements
-- User registration and profile management
-- Problem creation and management system
-- Code editor with syntax highlighting
-- Multi-language code execution engine
-- Automated test case validation
-- Contest and competition system
-- Discussion forums and community features
-- Progress tracking and analytics
-- Premium subscription management
-- Interview preparation tools
-- Company-specific problem collections
-- Plagiarism detection system
-- Real-time collaborative coding
+
+| ID | Requirement |
+|----|-------------|
+| FR1 | User registration, login, and profile management |
+| FR2 | Browse problems by difficulty, tags, and search |
+| FR3 | Submit code in multiple languages (Java, Python, C++) |
+| FR4 | Execute code in isolated sandbox with time/memory limits |
+| FR5 | Run submissions against test cases (sample + hidden) |
+| FR6 | Return verdict: ACCEPTED, WRONG_ANSWER, TLE, MLE, RUNTIME_ERROR |
+| FR7 | Practice mode: binary pass/fail scoring |
+| FR8 | Contest mode: register, submit, leaderboard with time penalty |
+| FR9 | View submission history and per-test-case results |
+| FR10 | Leaderboard updates on accepted contest submissions |
 
 ### Non-Functional Requirements
-- **Scale**: Support 10M+ users, 1M+ daily submissions
-- **Performance**: < 100ms UI response, < 5s code execution
-- **Availability**: 99.99% uptime
-- **Security**: Secure code execution, user data protection
-- **Reliability**: Consistent code execution results
-- **Scalability**: Auto-scaling execution infrastructure
-- **Global**: Multi-region deployment
 
-## 2. Architecture Overview
+| ID | Requirement |
+|----|-------------|
+| NFR1 | **Security**: Code must run in isolated container; no filesystem/network access |
+| NFR2 | **Performance**: Code execution < 5s per test case; UI response < 200ms |
+| NFR3 | **Reliability**: Consistent verdicts; no cross-contamination between submissions |
+| NFR4 | **Scalability**: Support 1M+ daily submissions via horizontal scaling |
+| NFR5 | **Extensibility**: Easy to add new languages and scoring modes |
 
-### Microservices Architecture
-```
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│  User Service   │    │Problem Service   │    │Execution Engine │
-└─────────────────┘    └──────────────────┘    └─────────────────┘
+---
 
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│Submission Svc   │    │ Contest Service  │    │Discussion Svc   │
-└─────────────────┘    └──────────────────┘    └─────────────────┘
+## 3. Database Design with Explanations
 
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│Analytics Svc    │    │Payment Service   │    │Notification Svc │
-└─────────────────┘    └──────────────────┘    └─────────────────┘
-```
-
-### Code Execution Flow
-```
-Code Submission ──▶ Queue ──▶ Execution Container ──▶ Test Cases ──▶ Result
-                      │              │                    │
-                      ▼              ▼                    ▼
-                 Load Balancer   Resource Monitor    Verdict Engine
-```
-
-## 3. Database Design
-
-### PostgreSQL (Primary Database)
 ```sql
--- Users table
+-- =============================================================================
+-- USERS
+-- WHY exists: Core entity for authentication, ownership of submissions, contest
+--             participation, and leaderboard identity.
+-- WHY FK: None (root entity).
+-- WHY index: username/email UNIQUE for login; created_at for admin queries.
+-- WHY structure: password_hash (never store plaintext); account_type for premium
+--                gating; JSONB preferences for flexible user settings.
+-- =============================================================================
 CREATE TABLE users (
-    user_id UUID PRIMARY KEY,
-    username VARCHAR(50) UNIQUE NOT NULL,
-    email VARCHAR(255) UNIQUE NOT NULL,
-    password_hash VARCHAR(255) NOT NULL,
-    first_name VARCHAR(100),
-    last_name VARCHAR(100),
-    country VARCHAR(100),
-    company VARCHAR(200),
-    school VARCHAR(200),
-    profile_picture_url VARCHAR(500),
-    user_status VARCHAR(20) DEFAULT 'active',
-    account_type VARCHAR(20) DEFAULT 'free', -- free, premium
-    premium_expires_at TIMESTAMP,
-    github_username VARCHAR(100),
-    linkedin_url VARCHAR(500),
-    created_at TIMESTAMP DEFAULT NOW(),
-    last_login TIMESTAMP,
-    preferences JSONB DEFAULT '{}'
+    user_id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    username        VARCHAR(50) UNIQUE NOT NULL,
+    email           VARCHAR(255) UNIQUE NOT NULL,
+    password_hash   VARCHAR(255) NOT NULL,
+    display_name    VARCHAR(100),
+    account_type    VARCHAR(20) DEFAULT 'free',  -- free, premium
+    created_at      TIMESTAMP DEFAULT NOW(),
+    updated_at      TIMESTAMP DEFAULT NOW()
 );
 
--- Problems table
+CREATE INDEX idx_users_username ON users(username);
+CREATE INDEX idx_users_email ON users(email);
+
+
+-- =============================================================================
+-- PROBLEMS
+-- WHY exists: Stores problem metadata and content. Problems are immutable in
+--             practice; edits create new versions (not modeled here for simplicity).
+-- WHY FK: created_by -> users (audit trail).
+-- WHY index: difficulty + tags for filtering; slug for URL lookup; is_active for
+--            soft-delete filtering.
+-- WHY structure: slug for SEO-friendly URLs; difficulty as enum-like; tags array
+--                for multi-tag filter; acceptance stats denormalized for fast reads.
+-- =============================================================================
 CREATE TABLE problems (
-    problem_id UUID PRIMARY KEY,
-    problem_slug VARCHAR(200) UNIQUE NOT NULL,
-    title VARCHAR(500) NOT NULL,
-    description TEXT NOT NULL,
-    difficulty VARCHAR(20) NOT NULL, -- Easy, Medium, Hard
-    problem_type VARCHAR(50) DEFAULT 'algorithm',
-    tags TEXT[] DEFAULT '{}',
-    companies TEXT[] DEFAULT '{}', -- Associated companies
-    category_id UUID,
-    
-    -- Statistics
-    acceptance_rate DECIMAL(5,2) DEFAULT 0.00,
-    total_submissions INTEGER DEFAULT 0,
+    problem_id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    slug                VARCHAR(200) UNIQUE NOT NULL,
+    title               VARCHAR(500) NOT NULL,
+    description         TEXT NOT NULL,
+    difficulty          VARCHAR(20) NOT NULL,  -- EASY, MEDIUM, HARD
+    tags                TEXT[] DEFAULT '{}',
+    acceptance_rate     DECIMAL(5,2) DEFAULT 0,
+    total_submissions   INTEGER DEFAULT 0,
     accepted_submissions INTEGER DEFAULT 0,
-    likes INTEGER DEFAULT 0,
-    dislikes INTEGER DEFAULT 0,
-    
-    -- Content
-    constraints TEXT,
-    examples JSONB DEFAULT '[]',
-    hints JSONB DEFAULT '[]',
-    solution_article_id UUID,
-    
-    -- Metadata
-    is_premium BOOLEAN DEFAULT false,
-    is_active BOOLEAN DEFAULT true,
-    created_by UUID,
-    created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW(),
-    similar_problems UUID[] DEFAULT '{}'
+    time_limit_ms       INTEGER DEFAULT 2000,
+    memory_limit_mb     INTEGER DEFAULT 256,
+    is_active           BOOLEAN DEFAULT true,
+    created_by          UUID REFERENCES users(user_id),
+    created_at          TIMESTAMP DEFAULT NOW(),
+    updated_at          TIMESTAMP DEFAULT NOW()
 );
 
--- Test cases
+CREATE INDEX idx_problems_difficulty ON problems(difficulty);
+CREATE INDEX idx_problems_slug ON problems(slug);
+CREATE INDEX idx_problems_tags ON problems USING GIN(tags);
+CREATE INDEX idx_problems_active ON problems(is_active) WHERE is_active = true;
+
+
+-- =============================================================================
+-- TEST_CASES
+-- WHY exists: Each problem has multiple test cases. Hidden cases prevent users
+--             from gaming the system; sample cases help debugging.
+-- WHY FK: problem_id -> problems (cascade delete when problem removed).
+-- WHY index: problem_id for fetching all cases for a problem; (problem_id, order)
+--            for deterministic execution order.
+-- WHY structure: input/output as TEXT for flexibility (JSON, arrays, etc.);
+--                is_sample vs is_hidden; order for consistent run sequence;
+--                per-case time/memory overrides (nullable, fallback to problem).
+-- =============================================================================
 CREATE TABLE test_cases (
-    test_case_id UUID PRIMARY KEY,
-    problem_id UUID REFERENCES problems(problem_id),
-    input_data TEXT NOT NULL,
+    test_case_id    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    problem_id      UUID NOT NULL REFERENCES problems(problem_id) ON DELETE CASCADE,
+    input_data      TEXT NOT NULL,
     expected_output TEXT NOT NULL,
-    is_example BOOLEAN DEFAULT false,
-    is_hidden BOOLEAN DEFAULT true,
-    test_case_order INTEGER DEFAULT 1,
-    time_limit_ms INTEGER DEFAULT 2000,
-    memory_limit_mb INTEGER DEFAULT 256,
-    created_at TIMESTAMP DEFAULT NOW()
+    is_sample       BOOLEAN DEFAULT false,
+    is_hidden       BOOLEAN DEFAULT true,
+    "order"         INTEGER NOT NULL DEFAULT 1,
+    time_limit_ms   INTEGER,  -- NULL = use problem default
+    memory_limit_mb INTEGER,  -- NULL = use problem default
+    created_at      TIMESTAMP DEFAULT NOW()
 );
 
--- Code submissions
-CREATE TABLE submissions (
-    submission_id UUID PRIMARY KEY,
-    user_id UUID REFERENCES users(user_id),
-    problem_id UUID REFERENCES problems(problem_id),
-    contest_id UUID, -- NULL for practice submissions
-    language VARCHAR(20) NOT NULL,
-    code TEXT NOT NULL,
-    status VARCHAR(30) DEFAULT 'pending', -- pending, accepted, wrong_answer, tle, mle, compile_error, runtime_error
-    runtime_ms INTEGER,
-    memory_usage_kb INTEGER,
-    test_cases_passed INTEGER DEFAULT 0,
-    total_test_cases INTEGER DEFAULT 0,
-    error_message TEXT,
-    verdict_details JSONB DEFAULT '{}',
-    is_public BOOLEAN DEFAULT false,
-    submitted_at TIMESTAMP DEFAULT NOW(),
-    judged_at TIMESTAMP,
-    execution_trace JSONB DEFAULT '{}'
-);
+CREATE INDEX idx_test_cases_problem ON test_cases(problem_id);
+CREATE UNIQUE INDEX idx_test_cases_problem_order ON test_cases(problem_id, "order");
 
--- Contests
+
+-- =============================================================================
+-- CONTESTS (must be created before submissions due to FK)
+-- WHY exists: Time-bounded competitions with start/end, problems, and scoring.
+-- WHY FK: created_by -> users (admin/author).
+-- WHY index: status for filtering upcoming/running/finished; start_time for
+--            scheduling and "active now" queries.
+-- WHY structure: duration_minutes for flexible contest length; status for
+--                registration window (upcoming), execution (running), closed.
+-- =============================================================================
 CREATE TABLE contests (
-    contest_id UUID PRIMARY KEY,
-    contest_name VARCHAR(200) NOT NULL,
-    contest_type VARCHAR(50) DEFAULT 'weekly', -- weekly, biweekly, monthly, special
-    description TEXT,
-    start_time TIMESTAMP NOT NULL,
+    contest_id      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name            VARCHAR(200) NOT NULL,
+    description     TEXT,
+    start_time      TIMESTAMP NOT NULL,
     duration_minutes INTEGER NOT NULL,
-    max_participants INTEGER,
-    current_participants INTEGER DEFAULT 0,
-    contest_status VARCHAR(20) DEFAULT 'upcoming', -- upcoming, running, finished
-    is_rated BOOLEAN DEFAULT true,
-    is_virtual_allowed BOOLEAN DEFAULT true,
-    created_by UUID,
-    created_at TIMESTAMP DEFAULT NOW(),
-    prize_pool JSONB DEFAULT '{}',
-    rules JSONB DEFAULT '{}'
+    status          VARCHAR(20) DEFAULT 'upcoming',  -- upcoming, running, finished
+    created_by      UUID REFERENCES users(user_id),
+    created_at      TIMESTAMP DEFAULT NOW()
 );
 
--- Contest problems mapping
-CREATE TABLE contest_problems (
-    contest_id UUID REFERENCES contests(contest_id),
-    problem_id UUID REFERENCES problems(problem_id),
-    problem_order INTEGER NOT NULL,
-    points INTEGER DEFAULT 100,
-    PRIMARY KEY (contest_id, problem_id)
+CREATE INDEX idx_contests_status ON contests(status);
+CREATE INDEX idx_contests_start_time ON contests(start_time);
+
+
+-- =============================================================================
+-- SUBMISSIONS
+-- WHY exists: Records every code submission. Central entity for execution flow,
+--             verdict tracking, and analytics.
+-- WHY FK: user_id, problem_id for ownership and problem context; contest_id
+--         nullable (NULL = practice) references contests.
+-- WHY index: (user_id, problem_id) for user's submission history; status for
+--            filtering; submitted_at for time-ordered queries; contest_id for
+--            contest-specific leaderboard aggregation.
+-- WHY structure: status follows state machine (PENDING->RUNNING->terminal);
+--                code stored as-is; runtime_ms/memory_kb from execution;
+--                contest_id NULL = practice, non-NULL = contest submission.
+-- =============================================================================
+CREATE TABLE submissions (
+    submission_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         UUID NOT NULL REFERENCES users(user_id),
+    problem_id      UUID NOT NULL REFERENCES problems(problem_id),
+    contest_id      UUID REFERENCES contests(contest_id),  -- NULL for practice
+    language        VARCHAR(20) NOT NULL,
+    code            TEXT NOT NULL,
+    status          VARCHAR(30) DEFAULT 'PENDING',
+    runtime_ms      INTEGER,
+    memory_kb       INTEGER,
+    test_cases_passed INTEGER DEFAULT 0,
+    total_test_cases  INTEGER DEFAULT 0,
+    error_message   TEXT,
+    submitted_at    TIMESTAMP DEFAULT NOW(),
+    judged_at       TIMESTAMP
 );
 
--- Contest participations
-CREATE TABLE contest_participations (
-    participation_id UUID PRIMARY KEY,
-    contest_id UUID REFERENCES contests(contest_id),
-    user_id UUID REFERENCES users(user_id),
-    rank INTEGER,
-    score INTEGER DEFAULT 0,
-    penalty_time INTEGER DEFAULT 0, -- in minutes
-    problems_solved INTEGER DEFAULT 0,
-    submission_count INTEGER DEFAULT 0,
-    participation_type VARCHAR(20) DEFAULT 'official', -- official, virtual
-    started_at TIMESTAMP,
-    finished_at TIMESTAMP,
+CREATE INDEX idx_submissions_user_problem ON submissions(user_id, problem_id);
+CREATE INDEX idx_submissions_status ON submissions(status);
+CREATE INDEX idx_submissions_submitted_at ON submissions(submitted_at DESC);
+CREATE INDEX idx_submissions_contest ON submissions(contest_id) WHERE contest_id IS NOT NULL;
+
+
+-- =============================================================================
+-- SUBMISSION_RESULTS
+-- WHY exists: Normalize per-test-case results. Enables "which test case failed"
+--            without storing full verdict_details JSON; supports partial scoring.
+-- WHY FK: submission_id, test_case_id for traceability.
+-- WHY index: submission_id for fetching all results of a submission.
+-- WHY structure: actual_output stored only on failure (save space); status
+--                 per case (PASSED, FAILED, TLE, MLE, RUNTIME_ERROR).
+-- =============================================================================
+CREATE TABLE submission_results (
+    result_id       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    submission_id   UUID NOT NULL REFERENCES submissions(submission_id) ON DELETE CASCADE,
+    test_case_id    UUID NOT NULL REFERENCES test_cases(test_case_id),
+    status          VARCHAR(30) NOT NULL,  -- PASSED, FAILED, TLE, MLE, RUNTIME_ERROR
+    runtime_ms      INTEGER,
+    memory_kb       INTEGER,
+    actual_output   TEXT,  -- Only populated on failure for debugging
+    error_message   TEXT,
+    created_at      TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_submission_results_submission ON submission_results(submission_id);
+
+
+-- =============================================================================
+-- CONTEST_REGISTRATIONS
+-- WHY exists: Many-to-many between users and contests. Tracks who participates,
+--             rank, score, penalty for leaderboard.
+-- WHY FK: contest_id, user_id for referential integrity.
+-- WHY index: (contest_id, rank) for leaderboard; (contest_id, user_id) unique
+--            to prevent double registration.
+-- WHY structure: score/penalty_time updated on each AC; problems_solved count;
+--                UNIQUE(contest_id, user_id) prevents duplicate registration.
+-- =============================================================================
+CREATE TABLE contest_registrations (
+    registration_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    contest_id        UUID NOT NULL REFERENCES contests(contest_id) ON DELETE CASCADE,
+    user_id           UUID NOT NULL REFERENCES users(user_id),
+    score             INTEGER DEFAULT 0,
+    penalty_time_min  INTEGER DEFAULT 0,
+    problems_solved   INTEGER DEFAULT 0,
+    rank              INTEGER,
+    registered_at     TIMESTAMP DEFAULT NOW(),
     UNIQUE(contest_id, user_id)
 );
 
--- Discussion posts
-CREATE TABLE discussion_posts (
-    post_id UUID PRIMARY KEY,
-    problem_id UUID REFERENCES problems(problem_id),
-    user_id UUID REFERENCES users(user_id),
-    parent_post_id UUID REFERENCES discussion_posts(post_id),
-    title VARCHAR(500),
-    content TEXT NOT NULL,
-    post_type VARCHAR(20) DEFAULT 'discussion', -- solution, discussion, question
-    language VARCHAR(20), -- For solution posts
-    upvotes INTEGER DEFAULT 0,
-    downvotes INTEGER DEFAULT 0,
-    is_official BOOLEAN DEFAULT false,
-    is_premium BOOLEAN DEFAULT false,
-    created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW()
-);
-
--- User problem progress
-CREATE TABLE user_progress (
-    user_id UUID REFERENCES users(user_id),
-    problem_id UUID REFERENCES problems(problem_id),
-    status VARCHAR(20) NOT NULL, -- attempted, solved
-    best_submission_id UUID REFERENCES submissions(submission_id),
-    attempts INTEGER DEFAULT 0,
-    first_solved_at TIMESTAMP,
-    last_attempted_at TIMESTAMP DEFAULT NOW(),
-    notes TEXT,
-    is_favorite BOOLEAN DEFAULT false,
-    PRIMARY KEY (user_id, problem_id)
-);
-
--- Indexes
-CREATE INDEX idx_problems_difficulty ON problems(difficulty);
-CREATE INDEX idx_problems_tags ON problems USING GIN(tags);
-CREATE INDEX idx_submissions_user_problem ON submissions(user_id, problem_id);
-CREATE INDEX idx_submissions_status ON submissions(status);
-CREATE INDEX idx_contest_participations_contest ON contest_participations(contest_id, rank);
+CREATE INDEX idx_contest_registrations_contest ON contest_registrations(contest_id);
+CREATE INDEX idx_contest_registrations_leaderboard ON contest_registrations(contest_id, score DESC, penalty_time_min ASC);
 ```
 
-### Redis (Cache & Real-time)
-```javascript
-// User session and preferences
-{
-  "user_session:uuid": {
-    "user_id": "uuid",
-    "username": "john_doe",
-    "account_type": "premium",
-    "current_language": "python3",
-    "theme": "dark",
-    "last_activity": "2024-01-01T12:00:00Z"
-  }
+---
+
+## 4. Design Patterns
+
+| Pattern | Where | Why |
+|---------|-------|-----|
+| **Strategy** | `JudgeStrategy` (SandboxJudge, DockerJudge) | Swap execution environments without changing orchestration logic. Local sandbox for dev, Docker for prod. |
+| **Strategy** | `ScoringStrategy` (BinaryScoring, PartialScoring, ContestScoring) | Different scoring rules for practice vs contest. Open/closed for extension. |
+| **Observer** | `SubmissionObserver` (LeaderboardObserver, AchievementObserver, AnalyticsObserver) | Decouple post-verdict side effects. Add new observers without modifying JudgeService. |
+| **Factory** | `JudgeFactory` | Create language-specific judge configurations. Encapsulates language→image/command mapping. |
+| **State** | `Submission` status transitions | Enforce valid state machine: PENDING→RUNNING→(ACCEPTED|WRONG_ANSWER|TLE|MLE|RUNTIME_ERROR). |
+| **Template Method** | Judge execution flow | Define skeleton: compile→run→compare; subclasses override compile step for compiled languages. |
+| **Dependency Injection** | JudgeService constructor | Inject JudgeStrategy, ScoringStrategy, Observers. Testable, swappable implementations. |
+
+---
+
+## 5. SOLID Principles
+
+| Principle | How |
+|-----------|-----|
+| **S**ingle Responsibility | `JudgeService` orchestrates; `JudgeStrategy` executes; `ScoringStrategy` scores; `SubmissionObserver` reacts. Each class has one reason to change. |
+| **O**pen/Closed | New languages via `JudgeFactory`; new scoring via `ScoringStrategy`; new side effects via `SubmissionObserver`—extend without modifying core. |
+| **L**iskov Substitution | Any `JudgeStrategy` implementation can replace another; any `ScoringStrategy` works in `JudgeService` without breaking contracts. |
+| **I**nterface Segregation | `JudgeStrategy`, `ScoringStrategy`, `SubmissionObserver` are small, focused interfaces. Clients depend only on what they need. |
+| **D**ependency Inversion | `JudgeService` depends on `JudgeStrategy` and `ScoringStrategy` abstractions, not concrete SandboxJudge/ContestScoring. |
+
+---
+
+## 6. Code Implementation in Java
+
+### Enums
+
+```java
+/** Difficulty levels for problems. Used for filtering and display. */
+public enum Difficulty {
+    EASY, MEDIUM, HARD
 }
 
-// Problem metadata cache
-{
-  "problem:slug": {
-    "problem_id": "uuid",
-    "title": "Two Sum",
-    "difficulty": "Easy",
-    "acceptance_rate": 45.2,
-    "tags": ["Array", "Hash Table"],
-    "is_premium": false,
-    "cached_at": "2024-01-01T12:00:00Z"
-  }
+/**
+ * Submission lifecycle and verdict states.
+ * State machine: PENDING -> RUNNING -> (ACCEPTED | WRONG_ANSWER | TLE | MLE | RUNTIME_ERROR)
+ */
+public enum SubmissionStatus {
+    PENDING,      // Queued, not yet executed
+    RUNNING,      // Currently executing
+    ACCEPTED,     // All test cases passed
+    WRONG_ANSWER, // Output mismatch
+    TLE,          // Time limit exceeded
+    MLE,          // Memory limit exceeded
+    RUNTIME_ERROR // Exception / non-zero exit
 }
 
-// Code execution queue
-{
-  "execution_queue:priority": [
-    {
-      "submission_id": "uuid",
-      "user_id": "uuid",
-      "problem_id": "uuid",
-      "language": "python3",
-      "priority": 1,
-      "queued_at": "2024-01-01T12:00:00Z"
+/** Supported languages for code execution. */
+public enum Language {
+    JAVA, PYTHON, CPP
+}
+```
+
+### Models (OOP: Encapsulation, Immutability, State Machine)
+
+```java
+import java.time.Instant;
+import java.util.List;
+
+/**
+ * Immutable problem entity.
+ * WHY: Problems are read-heavy; immutability prevents accidental mutation during
+ *      execution. Stats (acceptance_rate) updated separately via repository.
+ */
+public final class Problem {
+    private final String id;
+    private final String slug;
+    private final String title;
+    private final String description;
+    private final Difficulty difficulty;
+    private final int timeLimitMs;
+    private final int memoryLimitMb;
+
+    public Problem(String id, String slug, String title, String description,
+                   Difficulty difficulty, int timeLimitMs, int memoryLimitMb) {
+        this.id = id;
+        this.slug = slug;
+        this.title = title;
+        this.description = description;
+        this.difficulty = difficulty;
+        this.timeLimitMs = timeLimitMs;
+        this.memoryLimitMb = memoryLimitMb;
     }
-  ]
+
+    public String getId() { return id; }
+    public String getSlug() { return slug; }
+    public String getTitle() { return title; }
+    public String getDescription() { return description; }
+    public Difficulty getDifficulty() { return difficulty; }
+    public int getTimeLimitMs() { return timeLimitMs; }
+    public int getMemoryLimitMb() { return memoryLimitMb; }
 }
 
-// Real-time contest leaderboard
-{
-  "contest_leaderboard:uuid": [
-    {
-      "user_id": "uuid",
-      "username": "alice",
-      "rank": 1,
-      "score": 1200,
-      "penalty": 45,
-      "problems_solved": 3,
-      "last_submission": "2024-01-01T12:00:00Z"
+/**
+ * Test case: input, expected output, limits.
+ */
+public final class TestCase {
+    private final String id;
+    private final String problemId;
+    private final String inputData;
+    private final String expectedOutput;
+    private final boolean isSample;
+    private final Integer timeLimitMs;  // null = use problem default
+    private final Integer memoryLimitMb;
+    private final int order;
+
+    public TestCase(String id, String problemId, String inputData, String expectedOutput,
+                    boolean isSample, Integer timeLimitMs, Integer memoryLimitMb, int order) {
+        this.id = id;
+        this.problemId = problemId;
+        this.inputData = inputData;
+        this.expectedOutput = expectedOutput;
+        this.isSample = isSample;
+        this.timeLimitMs = timeLimitMs;
+        this.memoryLimitMb = memoryLimitMb;
+        this.order = order;
     }
-  ]
+
+    public String getId() { return id; }
+    public String getProblemId() { return problemId; }
+    public String getInputData() { return inputData; }
+    public String getExpectedOutput() { return expectedOutput; }
+    public boolean isSample() { return isSample; }
+    public Integer getTimeLimitMs() { return timeLimitMs; }
+    public Integer getMemoryLimitMb() { return memoryLimitMb; }
+    public int getOrder() { return order; }
 }
 
-// Code execution locks and status
-{
-  "execution:uuid": {
-    "status": "running",
-    "started_at": "2024-01-01T12:00:00Z",
-    "container_id": "container-123",
-    "timeout_at": "2024-01-01T12:00:05Z"
-  }
-}
-```
+/**
+ * Submission with state machine for status.
+ * WHY: Encapsulation - status transitions validated internally.
+ *      Invalid transitions (e.g. PENDING -> ACCEPTED) throw.
+ */
+public class Submission {
+    private final String id;
+    private final String userId;
+    private final String problemId;
+    private final String contestId;  // null = practice
+    private final Language language;
+    private final String code;
+    private SubmissionStatus status;
+    private Integer runtimeMs;
+    private Integer memoryKb;
+    private int testCasesPassed;
+    private int totalTestCases;
+    private String errorMessage;
+    private final Instant submittedAt;
+    private Instant judgedAt;
 
-## 4. Core Services Implementation
+    public Submission(String id, String userId, String problemId, String contestId,
+                      Language language, String code, Instant submittedAt) {
+        this.id = id;
+        this.userId = userId;
+        this.problemId = problemId;
+        this.contestId = contestId;
+        this.language = language;
+        this.code = code;
+        this.status = SubmissionStatus.PENDING;
+        this.submittedAt = submittedAt;
+    }
 
-### Problem Service
-```python
-class ProblemService:
-    def __init__(self, db_client, cache_client, search_service):
-        self.db = db_client
-        self.cache = cache_client
-        self.search_service = search_service
-    
-    async def create_problem(self, problem_data: dict, created_by: str) -> Problem:
-        """Create a new coding problem"""
-        try:
-            # Generate unique slug
-            slug = await self.generate_problem_slug(problem_data['title'])
-            
-            # Create problem
-            problem = Problem(
-                problem_id=str(uuid.uuid4()),
-                problem_slug=slug,
-                title=problem_data['title'],
-                description=problem_data['description'],
-                difficulty=problem_data['difficulty'],
-                tags=problem_data.get('tags', []),
-                companies=problem_data.get('companies', []),
-                examples=problem_data.get('examples', []),
-                constraints=problem_data.get('constraints', ''),
-                is_premium=problem_data.get('is_premium', False),
-                created_by=created_by,
-                created_at=datetime.utcnow()
-            )
-            
-            await self.db.create_problem(problem)
-            
-            # Create test cases
-            test_cases = problem_data.get('test_cases', [])
-            await self.create_test_cases(problem.problem_id, test_cases)
-            
-            # Index for search
-            await self.search_service.index_problem(problem)
-            
-            # Clear cache
-            await self.cache.delete(f"problem:{slug}")
-            
-            return problem
-            
-        except Exception as e:
-            logger.error(f"Problem creation failed: {str(e)}")
-            raise ProblemServiceError(f"Problem creation failed: {str(e)}")
-    
-    async def get_problem_by_slug(self, slug: str, user_id: str = None) -> dict:
-        """Get problem details with user context"""
-        try:
-            # Try cache first
-            cache_key = f"problem:{slug}"
-            cached_problem = await self.cache.get(cache_key)
-            
-            if cached_problem:
-                problem_data = json.loads(cached_problem)
-            else:
-                # Get from database
-                problem = await self.db.get_problem_by_slug(slug)
-                if not problem:
-                    raise ProblemNotFoundError("Problem not found")
-                
-                problem_data = problem.to_dict()
-                
-                # Cache for 1 hour
-                await self.cache.setex(cache_key, 3600, json.dumps(problem_data))
-            
-            # Add user-specific data
-            if user_id:
-                user_progress = await self.db.get_user_progress(user_id, problem_data['problem_id'])
-                problem_data['user_progress'] = user_progress.to_dict() if user_progress else None
-                
-                # Check if user has premium access
-                user = await self.db.get_user(user_id)
-                problem_data['has_access'] = (
-                    not problem_data['is_premium'] or
-                    (user.account_type == 'premium' and user.premium_expires_at > datetime.utcnow())
-                )
-            
-            # Get example test cases
-            example_test_cases = await self.db.get_example_test_cases(problem_data['problem_id'])
-            problem_data['examples'] = [tc.to_dict() for tc in example_test_cases]
-            
-            return problem_data
-            
-        except Exception as e:
-            logger.error(f"Problem retrieval failed: {str(e)}")
-            raise ProblemServiceError(f"Problem retrieval failed: {str(e)}")
-    
-    async def search_problems(self, search_params: dict, user_id: str = None) -> dict:
-        """Search problems with filters"""
-        try:
-            # Build search query
-            query_filters = {}
-            
-            if search_params.get('difficulty'):
-                query_filters['difficulty'] = search_params['difficulty']
-            
-            if search_params.get('tags'):
-                query_filters['tags'] = search_params['tags']
-            
-            if search_params.get('companies'):
-                query_filters['companies'] = search_params['companies']
-            
-            # Check premium access
-            user_has_premium = False
-            if user_id:
-                user = await self.db.get_user(user_id)
-                user_has_premium = (
-                    user.account_type == 'premium' and 
-                    user.premium_expires_at > datetime.utcnow()
-                )
-            
-            if not user_has_premium:
-                query_filters['is_premium'] = False
-            
-            # Execute search
-            search_results = await self.search_service.search_problems(
-                query=search_params.get('query', ''),
-                filters=query_filters,
-                page=search_params.get('page', 1),
-                limit=search_params.get('limit', 20)
-            )
-            
-            # Add user progress data
-            if user_id and search_results['problems']:
-                problem_ids = [p['problem_id'] for p in search_results['problems']]
-                user_progress_map = await self.db.get_user_progress_batch(user_id, problem_ids)
-                
-                for problem in search_results['problems']:
-                    progress = user_progress_map.get(problem['problem_id'])
-                    problem['user_status'] = progress.status if progress else None
-            
-            return search_results
-            
-        except Exception as e:
-            logger.error(f"Problem search failed: {str(e)}")
-            raise ProblemServiceError(f"Problem search failed: {str(e)}")
-```
-
-### Code Execution Service
-```python
-class CodeExecutionService:
-    def __init__(self, container_manager, queue_service, result_service):
-        self.container_manager = container_manager
-        self.queue_service = queue_service
-        self.result_service = result_service
-        self.language_configs = {
-            'python3': {
-                'image': 'python:3.9-alpine',
-                'timeout': 5000,  # 5 seconds
-                'memory_limit': 256,  # 256 MB
-                'compile_command': None,
-                'run_command': 'python3 solution.py'
-            },
-            'java': {
-                'image': 'openjdk:11-jdk-slim',
-                'timeout': 10000,  # 10 seconds  
-                'memory_limit': 512,  # 512 MB
-                'compile_command': 'javac Solution.java',
-                'run_command': 'java Solution'
-            },
-            'cpp': {
-                'image': 'gcc:9',
-                'timeout': 8000,  # 8 seconds
-                'memory_limit': 512,
-                'compile_command': 'g++ -o solution solution.cpp -std=c++17',
-                'run_command': './solution'
-            }
+    /** State machine: only valid transitions allowed. */
+    public void transitionTo(SubmissionStatus newStatus) {
+        if (!isValidTransition(status, newStatus)) {
+            throw new IllegalStateException("Invalid transition: " + status + " -> " + newStatus);
         }
-    
-    async def execute_submission(self, submission_id: str) -> dict:
-        """Execute code submission with test cases"""
-        try:
-            # Get submission details
-            submission = await self.db.get_submission(submission_id)
-            if not submission:
-                raise SubmissionNotFoundError("Submission not found")
-            
-            # Get problem and test cases
-            problem = await self.db.get_problem(submission.problem_id)
-            test_cases = await self.db.get_test_cases(submission.problem_id)
-            
-            # Get language configuration
-            lang_config = self.language_configs.get(submission.language)
-            if not lang_config:
-                raise UnsupportedLanguageError(f"Language {submission.language} not supported")
-            
-            # Update submission status
-            await self.db.update_submission_status(submission_id, 'running')
-            
-            # Create execution container
-            container = await self.container_manager.create_container(
-                image=lang_config['image'],
-                memory_limit=lang_config['memory_limit'],
-                timeout=lang_config['timeout']
-            )
-            
-            try:
-                # Execute code against test cases
-                execution_results = await self.run_test_cases(
-                    container, submission.code, test_cases, lang_config
-                )
-                
-                # Process results
-                verdict = await self.determine_verdict(execution_results)
-                
-                # Update submission with results
-                await self.update_submission_results(submission_id, verdict, execution_results)
-                
-                # Update user progress
-                if verdict['status'] == 'accepted':
-                    await self.update_user_progress(
-                        submission.user_id, 
-                        submission.problem_id, 
-                        'solved',
-                        submission_id
-                    )
-                
-                return verdict
-                
-            finally:
-                # Clean up container
-                await self.container_manager.cleanup_container(container.id)
-                
-        except Exception as e:
-            await self.db.update_submission_status(submission_id, 'system_error')
-            logger.error(f"Code execution failed for submission {submission_id}: {str(e)}")
-            raise ExecutionServiceError(f"Code execution failed: {str(e)}")
-    
-    async def run_test_cases(self, container, code: str, test_cases: List[TestCase], 
-                           lang_config: dict) -> List[dict]:
-        """Run code against all test cases"""
-        results = []
-        
-        # Write code to container
-        await container.write_file('solution.' + self.get_file_extension(lang_config), code)
-        
-        # Compile if needed
-        if lang_config.get('compile_command'):
-            compile_result = await container.execute_command(
-                lang_config['compile_command'],
-                timeout=30000  # 30 seconds for compilation
-            )
-            
-            if compile_result['exit_code'] != 0:
-                return [{
-                    'status': 'compile_error',
-                    'error_message': compile_result['stderr'],
-                    'test_case_id': None
-                }]
-        
-        # Run each test case
-        for i, test_case in enumerate(test_cases):
-            try:
-                # Write input to file
-                await container.write_file('input.txt', test_case.input_data)
-                
-                # Execute code
-                run_result = await container.execute_command(
-                    f"{lang_config['run_command']} < input.txt",
-                    timeout=test_case.time_limit_ms,
-                    memory_limit=test_case.memory_limit_mb
-                )
-                
-                # Compare output
-                actual_output = run_result['stdout'].strip()
-                expected_output = test_case.expected_output.strip()
-                
-                test_result = {
-                    'test_case_id': test_case.test_case_id,
-                    'test_case_order': i + 1,
-                    'status': 'passed' if actual_output == expected_output else 'failed',
-                    'runtime_ms': run_result['runtime_ms'],
-                    'memory_usage_kb': run_result['memory_usage_kb'],
-                    'exit_code': run_result['exit_code'],
-                    'expected_output': expected_output,
-                    'actual_output': actual_output
+        this.status = newStatus;
+        if (isTerminal(newStatus)) {
+            this.judgedAt = Instant.now();
+        }
+    }
+
+    private boolean isValidTransition(SubmissionStatus from, SubmissionStatus to) {
+        if (from == SubmissionStatus.PENDING && to == SubmissionStatus.RUNNING) return true;
+        if (from == SubmissionStatus.RUNNING && isTerminal(to)) return true;
+        return false;
+    }
+
+    private boolean isTerminal(SubmissionStatus s) {
+        return s == SubmissionStatus.ACCEPTED || s == SubmissionStatus.WRONG_ANSWER
+            || s == SubmissionStatus.TLE || s == SubmissionStatus.MLE
+            || s == SubmissionStatus.RUNTIME_ERROR;
+    }
+
+    public void setExecutionResult(int runtimeMs, int memoryKb, int passed, int total, String errorMessage) {
+        this.runtimeMs = runtimeMs;
+        this.memoryKb = memoryKb;
+        this.testCasesPassed = passed;
+        this.totalTestCases = total;
+        this.errorMessage = errorMessage;
+    }
+
+    public String getId() { return id; }
+    public String getUserId() { return userId; }
+    public String getProblemId() { return problemId; }
+    public String getContestId() { return contestId; }
+    public Language getLanguage() { return language; }
+    public String getCode() { return code; }
+    public SubmissionStatus getStatus() { return status; }
+    public Integer getRuntimeMs() { return runtimeMs; }
+    public Integer getMemoryKb() { return memoryKb; }
+    public int getTestCasesPassed() { return testCasesPassed; }
+    public int getTotalTestCases() { return totalTestCases; }
+    public String getErrorMessage() { return errorMessage; }
+    public Instant getSubmittedAt() { return submittedAt; }
+    public Instant getJudgedAt() { return judgedAt; }
+    public boolean isContestSubmission() { return contestId != null; }
+}
+```
+
+### Strategy: JudgeStrategy
+
+```java
+/**
+ * Strategy pattern: Swap execution environments.
+ * SandboxJudge = local process (dev); DockerJudge = container (prod).
+ */
+public interface JudgeStrategy {
+    ExecutionResult execute(String code, List<TestCase> testCases, Language language,
+                            int defaultTimeLimitMs, int defaultMemoryLimitMb);
+}
+
+/** Local execution - for development. Less isolation, faster. */
+public class SandboxJudge implements JudgeStrategy {
+    @Override
+    public ExecutionResult execute(String code, List<TestCase> testCases, Language language,
+                                   int defaultTimeLimitMs, int defaultMemoryLimitMb) {
+        // Write code to temp file, run with ProcessBuilder, enforce limits via
+        // timeout + memory monitoring. Compare stdout to expectedOutput.
+        // Return ExecutionResult with status, runtime, memory per case.
+        throw new UnsupportedOperationException("Implement: write file, run, compare");
+    }
+}
+
+/**
+ * Docker-based execution - production.
+ * WHY: Network disabled, read-only FS, resource limits, no privilege escalation.
+ */
+public class DockerJudge implements JudgeStrategy {
+    private final DockerClient dockerClient;
+
+    public DockerJudge(DockerClient dockerClient) {
+        this.dockerClient = dockerClient;
+    }
+
+    @Override
+    public ExecutionResult execute(String code, List<TestCase> testCases, Language language,
+                                   int defaultTimeLimitMs, int defaultMemoryLimitMb) {
+        String image = getImageFor(language);
+        ContainerConfig config = ContainerConfig.builder()
+            .image(image)
+            .networkDisabled(true)
+            .readOnlyRootFs(true)
+            .memoryLimitMb(defaultMemoryLimitMb)
+            .cpuQuota(50000)  // 50% CPU
+            .build();
+
+        try (Container container = dockerClient.createContainer(config)) {
+            container.writeFile(getSourceFileName(language), code);
+            if (needsCompilation(language)) {
+                CompileResult compile = container.run(getCompileCommand(language), 30_000);
+                if (!compile.isSuccess()) {
+                    return ExecutionResult.compileError(compile.getStderr());
                 }
-                
-                if run_result['exit_code'] != 0:
-                    test_result['status'] = 'runtime_error'
-                    test_result['error_message'] = run_result['stderr']
-                elif run_result['timeout']:
-                    test_result['status'] = 'time_limit_exceeded'
-                elif run_result['memory_exceeded']:
-                    test_result['status'] = 'memory_limit_exceeded'
-                
-                results.append(test_result)
-                
-                # Stop on first failure for efficiency
-                if test_result['status'] != 'passed':
-                    break
-                    
-            except Exception as e:
-                results.append({
-                    'test_case_id': test_case.test_case_id,
-                    'test_case_order': i + 1,
-                    'status': 'execution_error',
-                    'error_message': str(e)
-                })
-                break
-        
-        return results
-    
-    async def determine_verdict(self, execution_results: List[dict]) -> dict:
-        """Determine final verdict based on test case results"""
-        if not execution_results:
-            return {'status': 'system_error', 'message': 'No execution results'}
-        
-        # Check for compilation errors
-        if execution_results[0].get('status') == 'compile_error':
-            return {
-                'status': 'compile_error',
-                'message': execution_results[0]['error_message']
             }
-        
-        # Count results
-        total_cases = len(execution_results)
-        passed_cases = sum(1 for r in execution_results if r['status'] == 'passed')
-        
-        # Determine verdict
-        if passed_cases == total_cases:
-            max_runtime = max(r['runtime_ms'] for r in execution_results)
-            max_memory = max(r['memory_usage_kb'] for r in execution_results)
-            
-            return {
-                'status': 'accepted',
-                'test_cases_passed': passed_cases,
-                'total_test_cases': total_cases,
-                'runtime_ms': max_runtime,
-                'memory_usage_kb': max_memory,
-                'message': 'All test cases passed!'
+
+            List<TestCaseResult> results = new ArrayList<>();
+            for (TestCase tc : testCases) {
+                int timeLimit = tc.getTimeLimitMs() != null ? tc.getTimeLimitMs() : defaultTimeLimitMs;
+                int memLimit = tc.getMemoryLimitMb() != null ? tc.getMemoryLimitMb() : defaultMemoryLimitMb;
+                RunResult run = container.run(getRunCommand(language), tc.getInputData(), timeLimit, memLimit);
+
+                TestCaseResult tcr = compareOutput(run, tc.getExpectedOutput(), timeLimit, memLimit);
+                results.add(tcr);
+                if (!tcr.isPassed()) break;  // Stop on first failure
             }
-        else:
-            # Find first failed case
-            first_failure = next(r for r in execution_results if r['status'] != 'passed')
-            
-            verdict_map = {
-                'failed': 'wrong_answer',
-                'time_limit_exceeded': 'time_limit_exceeded',
-                'memory_limit_exceeded': 'memory_limit_exceeded',
-                'runtime_error': 'runtime_error',
-                'execution_error': 'runtime_error'
-            }
-            
-            return {
-                'status': verdict_map.get(first_failure['status'], 'wrong_answer'),
-                'test_cases_passed': passed_cases,
-                'total_test_cases': total_cases,
-                'failed_test_case': first_failure.get('test_case_order', 1),
-                'message': first_failure.get('error_message', 'Wrong answer')
-            }
+            return ExecutionResult.fromTestCaseResults(results);
+        }
+    }
+
+    private TestCaseResult compareOutput(RunResult run, String expected, int timeLimit, int memLimit) {
+        if (run.isTimeout()) return TestCaseResult.tle();
+        if (run.isMemoryExceeded()) return TestCaseResult.mle();
+        if (run.getExitCode() != 0) return TestCaseResult.runtimeError(run.getStderr());
+        boolean passed = normalize(run.getStdout()).equals(normalize(expected));
+        return passed ? TestCaseResult.passed(run.getRuntimeMs(), run.getMemoryKb())
+                     : TestCaseResult.wrongAnswer(run.getStdout());
+    }
+
+    private String normalize(String s) { return s != null ? s.trim() : ""; }
+    private String getImageFor(Language lang) { /* ... */ return ""; }
+    private String getSourceFileName(Language lang) { /* ... */ return ""; }
+    private boolean needsCompilation(Language lang) { return lang == Language.JAVA || lang == Language.CPP; }
+    private String getCompileCommand(Language lang) { /* ... */ return ""; }
+    private String getRunCommand(Language lang) { /* ... */ return ""; }
+}
+
+/** DTO for execution output. */
+public class ExecutionResult {
+    private final SubmissionStatus status;
+    private final List<TestCaseResult> testCaseResults;
+    private final String errorMessage;
+    private final int totalRuntimeMs;
+    private final int maxMemoryKb;
+
+    public static ExecutionResult compileError(String msg) { /* ... */ return null; }
+    public static ExecutionResult fromTestCaseResults(List<TestCaseResult> results) { /* ... */ return null; }
+    // getters...
+}
+
+public class TestCaseResult {
+    private final boolean passed;
+    private final String status;  // PASSED, FAILED, TLE, MLE, RUNTIME_ERROR
+    private final Integer runtimeMs;
+    private final Integer memoryKb;
+    private final String actualOutput;
+    private final String errorMessage;
+    // static factory methods: passed(), wrongAnswer(), tle(), mle(), runtimeError()
+}
 ```
 
-### Contest Service
-```python
-class ContestService:
-    def __init__(self, db_client, redis_client, notification_service):
-        self.db = db_client
-        self.redis = redis_client
-        self.notification_service = notification_service
-    
-    async def create_contest(self, contest_data: dict, created_by: str) -> Contest:
-        """Create a new contest"""
-        try:
-            contest = Contest(
-                contest_id=str(uuid.uuid4()),
-                contest_name=contest_data['name'],
-                contest_type=contest_data.get('type', 'weekly'),
-                description=contest_data.get('description', ''),
-                start_time=datetime.fromisoformat(contest_data['start_time']),
-                duration_minutes=contest_data['duration_minutes'],
-                max_participants=contest_data.get('max_participants'),
-                is_rated=contest_data.get('is_rated', True),
-                created_by=created_by,
-                created_at=datetime.utcnow()
-            )
-            
-            await self.db.create_contest(contest)
-            
-            # Add problems to contest
-            problems = contest_data.get('problems', [])
-            for i, problem_data in enumerate(problems):
-                await self.db.add_contest_problem(
-                    contest.contest_id,
-                    problem_data['problem_id'],
-                    i + 1,  # problem_order
-                    problem_data.get('points', 100)
-                )
-            
-            return contest
-            
-        except Exception as e:
-            logger.error(f"Contest creation failed: {str(e)}")
-            raise ContestServiceError(f"Contest creation failed: {str(e)}")
-    
-    async def register_user_for_contest(self, contest_id: str, user_id: str) -> dict:
-        """Register user for contest"""
-        try:
-            # Check if contest exists and is open for registration
-            contest = await self.db.get_contest(contest_id)
-            if not contest:
-                raise ContestNotFoundError("Contest not found")
-            
-            if contest.start_time <= datetime.utcnow():
-                raise ContestRegistrationError("Contest has already started")
-            
-            # Check participation limit
-            if contest.max_participants and contest.current_participants >= contest.max_participants:
-                raise ContestRegistrationError("Contest is full")
-            
-            # Check if user already registered
-            existing_participation = await self.db.get_contest_participation(contest_id, user_id)
-            if existing_participation:
-                raise ContestRegistrationError("User already registered")
-            
-            # Create participation record
-            participation = ContestParticipation(
-                participation_id=str(uuid.uuid4()),
-                contest_id=contest_id,
-                user_id=user_id,
-                participation_type='official'
-            )
-            
-            await self.db.create_contest_participation(participation)
-            
-            # Update participant count
-            await self.db.increment_contest_participants(contest_id)
-            
-            # Send confirmation notification
-            await self.notification_service.send_contest_registration_confirmation(
-                user_id, contest
-            )
-            
-            return {
-                'contest_id': contest_id,
-                'user_id': user_id,
-                'registration_status': 'confirmed'
-            }
-            
-        except Exception as e:
-            logger.error(f"Contest registration failed: {str(e)}")
-            raise ContestServiceError(f"Contest registration failed: {str(e)}")
-    
-    async def get_contest_leaderboard(self, contest_id: str, page: int = 1, 
-                                    limit: int = 100) -> dict:
-        """Get contest leaderboard with pagination"""
-        try:
-            # Try Redis cache first for active contests
-            cache_key = f"contest_leaderboard:{contest_id}"
-            cached_leaderboard = await self.redis.get(cache_key)
-            
-            if cached_leaderboard:
-                leaderboard_data = json.loads(cached_leaderboard)
-                
-                # Paginate results
-                start_idx = (page - 1) * limit
-                end_idx = start_idx + limit
-                paginated_results = leaderboard_data['rankings'][start_idx:end_idx]
-                
-                return {
-                    'contest_id': contest_id,
-                    'total_participants': len(leaderboard_data['rankings']),
-                    'page': page,
-                    'limit': limit,
-                    'rankings': paginated_results,
-                    'last_updated': leaderboard_data['last_updated']
-                }
-            
-            # Get from database if not cached
-            leaderboard = await self.db.get_contest_leaderboard(
-                contest_id, page, limit
-            )
-            
-            return leaderboard
-            
-        except Exception as e:
-            logger.error(f"Leaderboard retrieval failed: {str(e)}")
-            raise ContestServiceError(f"Leaderboard retrieval failed: {str(e)}")
-    
-    async def update_contest_standings(self, contest_id: str, user_id: str, 
-                                     submission_result: dict):
-        """Update contest standings after submission"""
-        try:
-            # Get participation record
-            participation = await self.db.get_contest_participation(contest_id, user_id)
-            if not participation:
-                return
-            
-            # Calculate new score and penalties
-            if submission_result['verdict']['status'] == 'accepted':
-                # Get problem points
-                problem_points = await self.db.get_contest_problem_points(
-                    contest_id, submission_result['problem_id']
-                )
-                
-                # Calculate time penalty (minutes since contest start)
-                contest = await self.db.get_contest(contest_id)
-                time_penalty = int((datetime.utcnow() - contest.start_time).total_seconds() / 60)
-                
-                # Update participation
-                new_score = participation.score + problem_points
-                new_penalty = participation.penalty_time + time_penalty
-                
-                await self.db.update_contest_participation(participation.participation_id, {
-                    'score': new_score,
-                    'penalty_time': new_penalty,
-                    'problems_solved': participation.problems_solved + 1
-                })
-            
-            # Update real-time leaderboard
-            await self.update_realtime_leaderboard(contest_id)
-            
-        except Exception as e:
-            logger.error(f"Contest standings update failed: {str(e)}")
-    
-    async def update_realtime_leaderboard(self, contest_id: str):
-        """Update real-time leaderboard in Redis"""
-        try:
-            # Get current standings from database
-            standings = await self.db.get_contest_standings(contest_id)
-            
-            # Format for cache
-            leaderboard_data = {
-                'contest_id': contest_id,
-                'rankings': [
-                    {
-                        'rank': i + 1,
-                        'user_id': standing.user_id,
-                        'username': standing.username,
-                        'score': standing.score,
-                        'penalty_time': standing.penalty_time,
-                        'problems_solved': standing.problems_solved,
-                        'last_submission_time': standing.last_submission_time.isoformat() if standing.last_submission_time else None
-                    }
-                    for i, standing in enumerate(standings)
-                ],
-                'last_updated': datetime.utcnow().isoformat()
-            }
-            
-            # Cache for 30 seconds during active contests
-            cache_key = f"contest_leaderboard:{contest_id}"
-            await self.redis.setex(cache_key, 30, json.dumps(leaderboard_data))
-            
-        except Exception as e:
-            logger.error(f"Leaderboard cache update failed: {str(e)}")
+### Strategy: ScoringStrategy
+
+```java
+/**
+ * Strategy pattern: Different scoring for practice vs contest.
+ */
+public interface ScoringStrategy {
+    int calculateScore(Submission submission, ExecutionResult result);
+}
+
+/** Practice: 100 if AC, 0 otherwise. */
+public class BinaryScoring implements ScoringStrategy {
+    @Override
+    public int calculateScore(Submission submission, ExecutionResult result) {
+        return result.getStatus() == SubmissionStatus.ACCEPTED ? 100 : 0;
+    }
+}
+
+/** Partial: score proportional to test cases passed. */
+public class PartialScoring implements ScoringStrategy {
+    @Override
+    public int calculateScore(Submission submission, ExecutionResult result) {
+        int total = result.getTestCaseResults().size();
+        long passed = result.getTestCaseResults().stream().filter(TestCaseResult::isPassed).count();
+        return total > 0 ? (int) (100 * passed / total) : 0;
+    }
+}
+
+/**
+ * Contest: points per problem, time penalty for late AC.
+ * WHY: Encourages both correctness and speed.
+ */
+public class ContestScoring implements ScoringStrategy {
+    private final int pointsPerProblem;
+    private final int penaltyPerMinute;
+
+    public ContestScoring(int pointsPerProblem, int penaltyPerMinute) {
+        this.pointsPerProblem = pointsPerProblem;
+        this.penaltyPerMinute = penaltyPerMinute;
+    }
+
+    @Override
+    public int calculateScore(Submission submission, ExecutionResult result) {
+        if (result.getStatus() != SubmissionStatus.ACCEPTED) return 0;
+        int minutesSinceStart = (int) (submission.getSubmittedAt().getEpochSecond() / 60);
+        int penalty = minutesSinceStart * penaltyPerMinute;
+        return Math.max(0, pointsPerProblem - penalty);
+    }
+}
 ```
 
-## 5. Security and Anti-Cheating
+### Observer: SubmissionObserver
 
-### Code Execution Security
-```python
-class SecureExecutionManager:
-    def __init__(self, docker_client):
-        self.docker = docker_client
-        
-    async def create_secure_container(self, language: str, memory_limit: int, 
-                                    time_limit: int) -> Container:
-        """Create secure isolated container for code execution"""
-        try:
-            container_config = {
-                'image': self.get_language_image(language),
-                'mem_limit': f'{memory_limit}m',
-                'cpu_period': 100000,
-                'cpu_quota': 50000,  # 50% CPU limit
-                'network_mode': 'none',  # No network access
-                'read_only': True,
-                'user': 'nobody',
-                'security_opt': ['no-new-privileges:true'],
-                'cap_drop': ['ALL'],
-                'tmpfs': {'/tmp': 'size=100m,exec,nosuid,nodev,noatime'},
-                'pids_limit': 64,  # Limit process count
-                'ulimits': [
-                    {'name': 'nofile', 'soft': 64, 'hard': 64},
-                    {'name': 'nproc', 'soft': 32, 'hard': 32}
-                ]
-            }
-            
-            container = await self.docker.containers.create(**container_config)
-            
-            # Set up execution timeout
-            asyncio.create_task(self.monitor_container_timeout(container.id, time_limit))
-            
-            return container
-            
-        except Exception as e:
-            logger.error(f"Secure container creation failed: {str(e)}")
-            raise
+```java
+/**
+ * Observer pattern: React to submission verdict without coupling JudgeService
+ * to leaderboard, achievements, analytics.
+ */
+public interface SubmissionObserver {
+    void onSubmissionJudged(Submission submission, ExecutionResult result);
+}
 
-class PlagiarismDetectionService:
-    def __init__(self, db_client, similarity_analyzer):
-        self.db = db_client
-        self.analyzer = similarity_analyzer
-    
-    async def check_submission_similarity(self, submission_id: str) -> dict:
-        """Check submission against other submissions for plagiarism"""
-        try:
-            submission = await self.db.get_submission(submission_id)
-            
-            # Get recent submissions for same problem (excluding user's own)
-            recent_submissions = await self.db.get_recent_submissions(
-                submission.problem_id,
-                exclude_user_id=submission.user_id,
-                limit=1000,
-                time_window_hours=24
-            )
-            
-            # Analyze code similarity
-            similarity_results = []
-            
-            for other_submission in recent_submissions:
-                similarity_score = await self.analyzer.calculate_similarity(
-                    submission.code,
-                    other_submission.code,
-                    submission.language
-                )
-                
-                if similarity_score > 0.8:  # High similarity threshold
-                    similarity_results.append({
-                        'similar_submission_id': other_submission.submission_id,
-                        'similar_user_id': other_submission.user_id,
-                        'similarity_score': similarity_score,
-                        'submission_time_diff': abs(
-                            (submission.submitted_at - other_submission.submitted_at).total_seconds()
-                        )
-                    })
-            
-            # Flag for review if suspicious
-            if similarity_results:
-                await self.flag_for_plagiarism_review(submission_id, similarity_results)
-            
-            return {
-                'submission_id': submission_id,
-                'suspicious_similarities': len(similarity_results),
-                'requires_review': len(similarity_results) > 0
-            }
-            
-        except Exception as e:
-            logger.error(f"Plagiarism check failed: {str(e)}")
-            return {'submission_id': submission_id, 'requires_review': False}
+public class LeaderboardObserver implements SubmissionObserver {
+    private final ContestRegistrationRepository registrationRepo;
+
+    public LeaderboardObserver(ContestRegistrationRepository registrationRepo) {
+        this.registrationRepo = registrationRepo;
+    }
+
+    @Override
+    public void onSubmissionJudged(Submission submission, ExecutionResult result) {
+        if (!submission.isContestSubmission() || result.getStatus() != SubmissionStatus.ACCEPTED)
+            return;
+        registrationRepo.updateScore(submission.getContestId(), submission.getUserId(),
+            result.getTotalRuntimeMs(), result.getMaxMemoryKb());
+    }
+}
+
+public class AchievementObserver implements SubmissionObserver {
+    @Override
+    public void onSubmissionJudged(Submission submission, ExecutionResult result) {
+        if (result.getStatus() == SubmissionStatus.ACCEPTED) {
+            // Check: first AC, streak, difficulty milestones, etc.
+        }
+    }
+}
+
+public class AnalyticsObserver implements SubmissionObserver {
+    @Override
+    public void onSubmissionJudged(Submission submission, ExecutionResult result) {
+        // Log to analytics pipeline: problem_id, language, status, runtime, etc.
+    }
+}
 ```
 
-## 6. Analytics and Insights
+### Factory: JudgeFactory
 
-### User Analytics Service
-```python
-class UserAnalyticsService:
-    def __init__(self, db_client, cache_client):
-        self.db = db_client
-        self.cache = cache_client
-    
-    async def generate_user_profile_insights(self, user_id: str) -> dict:
-        """Generate comprehensive user insights"""
-        try:
-            # Basic stats
-            user_stats = await self.db.get_user_statistics(user_id)
-            
-            # Problem-solving patterns
-            solving_patterns = await self.analyze_solving_patterns(user_id)
-            
-            # Strength/weakness analysis
-            topic_analysis = await self.analyze_topic_performance(user_id)
-            
-            # Progress tracking
-            progress_timeline = await self.get_progress_timeline(user_id)
-            
-            # Contest performance
-            contest_performance = await self.get_contest_performance(user_id)
-            
-            return {
-                'user_id': user_id,
-                'overall_stats': {
-                    'total_problems_solved': user_stats['problems_solved'],
-                    'total_submissions': user_stats['total_submissions'],
-                    'acceptance_rate': user_stats['acceptance_rate'],
-                    'current_streak': user_stats['current_streak'],
-                    'max_streak': user_stats['max_streak']
-                },
-                'difficulty_breakdown': user_stats['difficulty_breakdown'],
-                'solving_patterns': solving_patterns,
-                'topic_analysis': topic_analysis,
-                'progress_timeline': progress_timeline,
-                'contest_performance': contest_performance,
-                'generated_at': datetime.utcnow().isoformat()
-            }
-            
-        except Exception as e:
-            logger.error(f"User analytics generation failed: {str(e)}")
-            raise AnalyticsError(f"Analytics generation failed: {str(e)}")
+```java
+/**
+ * Factory pattern: Create judge config per language.
+ * WHY: Centralizes language→image/commands; easy to add new languages.
+ */
+public interface JudgeFactory {
+    JudgeConfig getConfig(Language language);
+}
+
+public class JudgeConfig {
+    private final String dockerImage;
+    private final String sourceFileName;
+    private final String compileCommand;
+    private final String runCommand;
+    private final boolean needsCompilation;
+    // constructor, getters
+}
+
+public class DefaultJudgeFactory implements JudgeFactory {
+    private static final Map<Language, JudgeConfig> CONFIGS = Map.of(
+        Language.JAVA, new JudgeConfig("openjdk:11", "Solution.java", "javac Solution.java", "java Solution", true),
+        Language.PYTHON, new JudgeConfig("python:3.9", "solution.py", null, "python3 solution.py", false),
+        Language.CPP, new JudgeConfig("gcc:9", "solution.cpp", "g++ -o solution solution.cpp", "./solution", true)
+    );
+
+    @Override
+    public JudgeConfig getConfig(Language language) {
+        JudgeConfig config = CONFIGS.get(language);
+        if (config == null) throw new UnsupportedLanguageException(language.toString());
+        return config;
+    }
+}
 ```
 
-This comprehensive LeetCode platform design provides secure code execution, contest management, plagiarism detection, and detailed analytics with scalable architecture to handle millions of users and submissions.
+### JudgeService (Orchestrator with DI)
+
+```java
+/**
+ * Orchestrator: Coordinates judge, scoring, persistence, observers.
+ * WHY DI: Testable; swap SandboxJudge/DockerJudge, BinaryScoring/ContestScoring.
+ */
+public class JudgeService {
+    private final JudgeStrategy judgeStrategy;
+    private final ScoringStrategy scoringStrategy;
+    private final JudgeFactory judgeFactory;
+    private final SubmissionRepository submissionRepo;
+    private final ProblemRepository problemRepo;
+    private final TestCaseRepository testCaseRepo;
+    private final List<SubmissionObserver> observers;
+
+    public JudgeService(JudgeStrategy judgeStrategy, ScoringStrategy scoringStrategy,
+                        JudgeFactory judgeFactory, SubmissionRepository submissionRepo,
+                        ProblemRepository problemRepo, TestCaseRepository testCaseRepo,
+                        List<SubmissionObserver> observers) {
+        this.judgeStrategy = judgeStrategy;
+        this.scoringStrategy = scoringStrategy;
+        this.judgeFactory = judgeFactory;
+        this.submissionRepo = submissionRepo;
+        this.problemRepo = problemRepo;
+        this.testCaseRepo = testCaseRepo;
+        this.observers = observers;
+    }
+
+    public void judgeSubmission(String submissionId) {
+        Submission submission = submissionRepo.findById(submissionId).orElseThrow();
+        Problem problem = problemRepo.findById(submission.getProblemId()).orElseThrow();
+        List<TestCase> testCases = testCaseRepo.findByProblemId(problem.getId());
+
+        submission.transitionTo(SubmissionStatus.RUNNING);
+        submissionRepo.save(submission);
+
+        try {
+            ExecutionResult result = judgeStrategy.execute(
+                submission.getCode(),
+                testCases,
+                submission.getLanguage(),
+                problem.getTimeLimitMs(),
+                problem.getMemoryLimitMb()
+            );
+
+            submission.setExecutionResult(
+                result.getTotalRuntimeMs(),
+                result.getMaxMemoryKb(),
+                result.getTestCasesPassed(),
+                result.getTotalTestCases(),
+                result.getErrorMessage()
+            );
+            submission.transitionTo(result.getStatus());
+            submissionRepo.save(submission);
+
+            int score = scoringStrategy.calculateScore(submission, result);
+            // Persist score if contest...
+
+            for (SubmissionObserver obs : observers) {
+                obs.onSubmissionJudged(submission, result);
+            }
+        } catch (Exception e) {
+            submission.transitionTo(SubmissionStatus.RUNTIME_ERROR);
+            submission.setExecutionResult(0, 0, 0, testCases.size(), e.getMessage());
+            submissionRepo.save(submission);
+        }
+    }
+}
+```
+
+### Test Case Comparison Logic (Focus Area)
+
+```java
+/**
+ * Robust comparison: trim whitespace, handle trailing newlines.
+ * For strict mode: exact match. For flexible: ignore trailing newlines.
+ */
+public final class OutputComparator {
+    public static boolean compare(String actual, String expected) {
+        if (actual == null && expected == null) return true;
+        if (actual == null || expected == null) return false;
+        return normalize(actual).equals(normalize(expected));
+    }
+
+    private static String normalize(String s) {
+        return s.trim().replaceAll("\\s+", " ");
+    }
+}
+
+/**
+ * Time limit: use ProcessBuilder with timeout, or Docker --memory/--cpus.
+ * Memory limit: Docker --memory; or JVM -Xmx for Java.
+ */
+```
+
+---
+
+## 7. Edge Cases & Tests
+
+| # | Edge Case | Test / Handling |
+|---|-----------|-----------------|
+| 1 | **Empty output** | Expected "" vs actual "" → PASS. Actual "  \n" → normalize and compare. |
+| 2 | **Trailing newline / whitespace** | Use `trim()` or `normalize()`; document in problem statement. |
+| 3 | **TLE on first test case** | Stop execution immediately; return TLE verdict; do not run remaining cases. |
+| 4 | **MLE** | Docker `--memory` or OS limits; detect OOM and return MLE. |
+| 5 | **Compile error** | Do not run any test case; return RUNTIME_ERROR or dedicated COMPILE_ERROR. |
+| 6 | **Infinite loop** | Enforce time limit per test case; kill process after timeout. |
+| 7 | **Malicious code (file/network)** | Docker: `network_mode: none`, `read_only: true`, drop capabilities. |
+| 8 | **Contest submission after end** | Reject or mark as practice; validate `submittedAt` < contest end. |
+
+---
+
+## 8. Summary
+
+| Aspect | Summary |
+|--------|---------|
+| **Core flow** | Submit → Queue → Judge (Strategy) → Compare outputs → Score (Strategy) → Notify (Observer) |
+| **Security** | Docker isolation, no network, read-only FS, resource limits |
+| **Scoring** | Binary (practice), Partial, Contest (time penalty) |
+| **Patterns** | Strategy (Judge, Scoring), Observer (post-verdict), Factory (language config) |
+| **SOLID** | SRP per class, OCP via strategies/observers, DIP via DI |
+| **State** | Submission: PENDING → RUNNING → terminal verdict |
+| **DB** | users, problems, test_cases, submissions, submission_results, contests, contest_registrations |

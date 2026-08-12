@@ -1,35 +1,36 @@
 # Pizza Pricing Engine - Low Level Design (Machine Coding)
 
-> **Interview lesson from L5 feedback:** Failures were *not* "wrong entities". Failures were: skip clarify → class explosion → static catalog → never wire end-to-end → don't inject pricing. This doc is the **expected answer**.
+> **Interview lesson (L5 feedback):** Failures were not "wrong entities". Failures were: skip clarify → class explosion → static catalog → never wire end-to-end → don't inject pricing. This doc is the **expected answer**, structured like the parking-lot LLD.
 
 ## Table of Contents
 1. [Problem Statement](#problem-statement)
 2. [Clarifying Questions (ASK FIRST)](#clarifying-questions-ask-first)
 3. [Requirements](#requirements)
 4. [What NOT To Do (Interview Anti-Patterns)](#what-not-to-do-interview-anti-patterns)
-5. [Design Approach](#design-approach)
+5. [Data Model Design with Explanations](#data-model-design-with-explanations)
 6. [Class Diagram](#class-diagram)
-7. [Design Patterns & SOLID](#design-patterns--solid)
-8. [Code Implementation](#code-implementation)
-9. [End-to-End Wiring](#end-to-end-wiring)
-10. [Edge Cases & Tests](#edge-cases--tests)
-11. [Interview Talking Points](#interview-talking-points)
+7. [Design Patterns Used](#design-patterns-used)
+8. [SOLID Principles Applied](#solid-principles-applied)
+9. [Code Implementation](#code-implementation)
+10. [Request Flows](#request-flows)
+11. [Edge Cases & Tests](#edge-cases--tests)
+12. [Interview Talking Points](#interview-talking-points)
+13. [Summary of Patterns & Principles](#summary-of-patterns--principles)
 
 ---
 
 ## Problem Statement
 
-Design an **in-memory pricing engine** for a pizza delivery service.
+Design a **pricing engine** for a pizza delivery service. Price is calculated as:
 
-**Price formula:**
 ```
 pizza_price = base_price + size_price + sum(topping_prices)
 order_price = sum(pizza_price for each pizza in order)
 ```
 
-**Constraints:**
-- In-memory only (no database)
-- Must be **extendable** (new base / size / topping without new classes)
+**Interview constraints:**
+- In-memory first (no DB required for the coding round)
+- Must be **extendable** (new base / size / topping without a new class per variant)
 - Must support **multiple stores** with **different price catalogs**
 - Pizza entity must **not** own pricing logic
 
@@ -38,38 +39,41 @@ order_price = sum(pizza_price for each pizza in order)
 ## Clarifying Questions (ASK FIRST)
 
 > Interviewer concern: *"Jumped into solution without clarifying pricing logic."*
-> Always ask these **before** writing classes.
+> Ask these **before** writing classes (parking-lot style: requirements first, code second).
 
-| # | Question | Why it matters | Typical assumption if they say "you decide" |
-|---|----------|----------------|-----------------------------------------------|
-| 1 | Is price = base + size + toppings only? Taxes / delivery / coupons? | Scope. Don't invent billing. | **No tax, no coupon, no delivery fee** |
-| 2 | Can one order have multiple pizzas? | Need `Order` aggregate or just single pizza? | **Yes, multiple pizzas** |
-| 3 | Are toppings unique per pizza, or can same topping appear twice? | List vs Set | **List allowed (double cheese)** |
-| 4 | Fixed menu only, or free-form custom pizza? | Enums vs free strings | **Only listed Base / Size / Topping enums** |
-| 5 | Same prices for all stores, or per-store prices? | Single catalog vs inject catalog | Start **single store**, then ask if multi-store is in scope |
-| 6 | What if catalog missing a price for a topping? | Return 0 (silent bug) vs throw | **Throw exception** — never silent 0 |
-| 7 | Currency currency / precision? | `int` paise / cents vs `BigDecimal` | **int cents** (or `BigDecimal` if interview prefers money type) |
-| 8 | Is system only pricing, or also place-order / kitchen? | Stay on **core**: pricing dependency injection | **Pricing only** — don't digress into StoreManagement UI |
+| # | Question | Why it matters | Default assumption |
+|---|----------|----------------|--------------------|
+| 1 | Price = base + size + toppings only? Tax / delivery / coupons? | Scope. Don't invent billing. | **No tax, coupon, delivery fee** |
+| 2 | One order → multiple pizzas? | Need `Order` aggregate or single pizza? | **Yes, multiple pizzas** |
+| 3 | Same topping twice (double cheese)? | `List` vs `Set` | **List — charge twice** |
+| 4 | Fixed menu only? | Enums vs free strings | **Only listed enums** |
+| 5 | Same prices all stores, or per-store? | Single catalog vs inject catalog | Start **single store**, then multi-store |
+| 6 | Missing catalog price for a topping? | Silent `0` vs throw | **Throw exception — never 0** |
+| 7 | Money type? | `int` cents vs `BigDecimal` | **`int` cents** (or BigDecimal if they prefer) |
+| 8 | Pricing only, or kitchen / delivery too? | Stay on **core DI** | **Pricing only** |
 
 **Say out loud:**
-> "I'll assume: multi-pizza order, formula base+size+toppings, no tax/coupon, enum-only options, missing price throws, in-memory. If multi-store pricing is required, I'll inject catalog per store."
+> "I'll assume: multi-pizza order, formula base+size+toppings, no tax/coupon, enum-only options, missing price throws, in-memory. Multi-store = inject catalog per store."
 
 ---
 
 ## Requirements
 
-### Functional
+### Functional Requirements
 1. Build a pizza from Base + Size + Toppings
-2. Calculate pizza price from catalog lookups
-3. Calculate order total (sum of pizzas)
+2. Calculate pizza price from catalog lookups (base + size + toppings)
+3. Calculate order total (sum of pizza prices)
 4. Support per-store price catalogs (different cities / franchises)
-5. Reject unknown / unpriced options loudly
+5. Reject unknown / unpriced options loudly (exception, not silent 0)
+6. Allow adding a new topping / size / base without a new Strategy class
+7. Support optional promo pricing (percentage off) without changing Pizza
 
-### Non-Functional
-1. **Extendable:** add new topping = catalog entry, **not** new class
-2. **SRP:** Pizza = data; PricingService = math; Catalog = prices
-3. **In-memory**, thread-safe enough for interview demo
-4. **Testable:** inject catalog → unit test without static globals
+### Non-Functional Requirements
+- In-memory, fast lookups (`EnumMap` O(1))
+- Extensible for new product options and pricing strategies
+- Testable via dependency injection (no static globals)
+- Clear separation: domain data vs price data vs pricing behavior
+- Thread-safe catalog registry for multi-store access
 
 ---
 
@@ -77,166 +81,258 @@ order_price = sum(pizza_price for each pizza in order)
 
 | Anti-pattern | Why interviewer rejects it | Correct move |
 |--------------|----------------------------|--------------|
-| Class per crust / size / topping (`ThinCrustStrategy`, `CheeseToppingStrategy`…) | **Class explosion**. New SKU = code change + redeploy | Enum + Map catalog |
-| `Pizza.getPrice()` calling `PriceCatalog.getBasePrice()` **static** | Global single price set. Multi-store impossible. Hard to test | **Inject** `PricingCatalog` / `PricingStrategy` |
-| Return `0` for unknown topping in switch/default | Silent undercharge. Customer thinks toppings free | **Throw** `PriceNotFoundException` |
-| Jump into StoreManager / kitchen / delivery before pricing works | "Peripheral concerns" — core miss is **inject pricing dependency** | Wire Pizza → Service → Catalog **first**, then multi-store |
-| Only talk SOLID names without wiring | "Knew SRP but couldn't wire design" | Show runnable end-to-end main / test |
+| Class per crust / size / topping | **Class explosion**. New SKU = code change | Enum + Map catalog |
+| `Pizza.getPrice()` → static `PriceCatalog` | One global price world; multi-store broken | **Inject** catalog / strategy |
+| Return `0` in switch default | Silent undercharge | **Throw** `PriceNotFoundException` |
+| StoreManager / kitchen before pricing works | Peripheral before core | Wire Pizza → Service → Catalog **first** |
+| Name SOLID without wiring | "Knew SRP but couldn't wire" | Show runnable end-to-end demo |
 
 ---
 
-## Design Approach
+## Data Model Design with Explanations
 
-### Core idea (what interviewer wanted)
+> Interview said **in-memory / no DB**. Still design the **data model** the parking-lot way: what lives where, why, relationships. Below: in-memory structures first, then optional SQL if interviewer asks "how would you persist?".
 
-```
-┌─────────────┐     uses      ┌──────────────────┐     reads     ┌─────────────────┐
-│    Pizza    │ ────────────► │  PricingService  │ ────────────► │ PricingCatalog  │
-│ (data only) │               │ (calculates $)   │               │ (Map lookups)   │
-└─────────────┘               └──────────────────┘               └─────────────────┘
-                                      ▲
-                                      │ implements
-                              ┌───────┴────────┐
-                              │ PricingStrategy│  ← Strategy interface (DI seam)
-                              └────────────────┘
-```
-
-1. **Enums** = closed set of product options (type-safe, no string typos)
-2. **PricingCatalog** = Maps of enum → price (data, not classes)
-3. **PricingStrategy** = Strategy interface (swap catalog / promo / store pricing)
-4. **CatalogPricingStrategy** = default impl that uses a catalog instance
-5. **PricingService** = orchestrates pricing for Pizza / Order
-6. **StoreCatalogRegistry** (or StoreManager) = `storeId → PricingCatalog` for multi-store
-7. **Never** put price math inside `Pizza`
-
-### Formula (state clearly)
+### Why Each In-Memory Structure Exists
 
 ```
-price(pizza) = catalog.base(base) + catalog.size(size) + Σ catalog.topping(t)
-price(order) = Σ price(pizza)
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ IN-MEMORY MODEL (coding round)                                              │
+│                                                                             │
+│  Enums: Base, Size, Topping                                                 │
+│    WHY? Closed, type-safe product options. Compiler catches "chese" typos.  │
+│    NOT classes — one class per topping = explosion (L5 fail mode).          │
+│                                                                             │
+│  PricingCatalog (per store)                                                 │
+│    basePrices:    EnumMap<Base, Integer>                                    │
+│    sizePrices:    EnumMap<Size, Integer>                                    │
+│    toppingPrices: EnumMap<Topping, Integer>                                 │
+│    WHY Maps? Prices are DATA. Change price ≠ change code.                   │
+│    WHY EnumMap? O(1), compact, type-safe keys.                              │
+│    WHY INSTANCE not static? Each store needs its own price set.             │
+│                                                                             │
+│  Pizza                                                                      │
+│    base, size, toppings[]                                                   │
+│    WHY no price field? Price depends on WHICH store's catalog is used.      │
+│    Same Pizza @ SFO ≠ same Pizza @ NYC. Pizza is product config, not bill.  │
+│                                                                             │
+│  Order                                                                      │
+│    pizzas[]                                                                 │
+│    WHY aggregate? One checkout can have many pizzas; total = sum.           │
+│                                                                             │
+│  StoreCatalogRegistry                                                       │
+│    storeId → PricingCatalog                                                 │
+│    WHY? Multi-store: resolve which price world applies.                     │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Multi-store extension (after core works)
+### Relationships (say these like parking-lot FK talk)
 
 ```
-Store "SFO" → Catalog{ Margherita base=200, ... }
-Store "NYC" → Catalog{ Margherita base=250, ... }
+- Store HAS-A PricingCatalog (composition)
+    WHY? Catalog lifetime tied to store's pricing config. Different stores,
+    different prices. Pizza does NOT belong to a store — only catalog does.
 
-PricingService(strategyFor(storeId)).price(pizza)
+- PricingService USES PricingStrategy (dependency / DI)
+    WHY? Service orchestrates; strategy owns the algorithm. Swap catalog-based
+    vs discount strategy without changing service.
+
+- CatalogPricingStrategy HAS-A PricingCatalog (composition via injection)
+    WHY? Strategy needs price data. Injected instance = multi-store + testable.
+
+- Order HAS many Pizza (composition)
+    WHY? Order owns its line items for this checkout. Pizzas don't exist
+    outside the order in this simplified scope.
+
+- Pizza references Base, Size, Topping (association to enums)
+    WHY? Pizza describes WHAT was ordered. Price comes later from catalog.
 ```
 
-Pizza stays identical across stores. **Only catalog instance changes.**
+### Optional Persistence Schema (if interviewer asks)
+
+```sql
+-- ============================================================================
+-- TABLE: stores
+-- WHY: Top-level entity for each franchise / city kitchen. Multiple stores
+--      share the same product enums but NOT the same prices.
+-- ============================================================================
+CREATE TABLE stores (
+    store_id    UUID PRIMARY KEY,
+    store_code  VARCHAR(20) NOT NULL UNIQUE,  -- "SFO", "NYC"
+    store_name  VARCHAR(200) NOT NULL,
+    is_active   BOOLEAN DEFAULT true,
+    created_at  TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================================================
+-- TABLE: price_catalog_entries
+-- WHY: Prices are DATA. One row per (store, option_type, option_key).
+--      Adding a topping price = INSERT, not a new Java class.
+--
+-- RELATIONSHIP: price_catalog_entries → stores (Many-to-One)
+--   WHY FK? Every price belongs to exactly one store. Prevents orphan prices.
+--   WHY NOT columns on stores? Because option set grows (many toppings).
+-- ============================================================================
+CREATE TABLE price_catalog_entries (
+    entry_id     UUID PRIMARY KEY,
+    store_id     UUID NOT NULL REFERENCES stores(store_id) ON DELETE CASCADE,
+    option_type  VARCHAR(20) NOT NULL,   -- BASE, SIZE, TOPPING
+    option_key   VARCHAR(40) NOT NULL,   -- THIN, LARGE, CHEESE
+    price_cents  INTEGER NOT NULL CHECK (price_cents >= 0),
+    UNIQUE(store_id, option_type, option_key)
+);
+
+-- WHY this index? Hot path: load all prices for one store into EnumMaps at boot.
+CREATE INDEX idx_catalog_store ON price_catalog_entries(store_id);
+
+-- ============================================================================
+-- TABLE: orders / order_pizzas
+-- WHY: Persist what customer ordered. Snapshot store_id so historical orders
+--      still make sense if catalog prices change later.
+-- ============================================================================
+CREATE TABLE orders (
+    order_id     UUID PRIMARY KEY,
+    store_id     UUID NOT NULL REFERENCES stores(store_id),
+    total_cents  INTEGER NOT NULL,
+    created_at   TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE order_pizzas (
+    order_pizza_id UUID PRIMARY KEY,
+    order_id       UUID NOT NULL REFERENCES orders(order_id) ON DELETE CASCADE,
+    base_key       VARCHAR(40) NOT NULL,
+    size_key       VARCHAR(40) NOT NULL,
+    toppings       JSONB NOT NULL,          -- ["CHEESE","OLIVE"]
+    line_price_cents INTEGER NOT NULL       -- snapshot at order time
+);
+
+-- WHY snapshot line_price_cents?
+--   Same reason parking tickets snapshot rates: prices change; billing must not.
+```
+
+### Why In-Memory Maps in the Coding Round (not SQL)
+
+1. Interview said no DB — maps are the catalog.
+2. `EnumMap` gives type safety + O(1) like an indexed table.
+3. Loading SQL rows into `PricingCatalog` later is a **repository detail**; Strategy/Service stay unchanged (Dependency Inversion).
 
 ---
 
 ## Class Diagram
 
 ```
-┌──────────────────────┐
-│ «enum» Base          │
-│ THIN, THICK, CHEESE  │
-└──────────────────────┘
-┌──────────────────────┐
-│ «enum» Size          │
-│ SMALL, MEDIUM, LARGE │
-└──────────────────────┘
-┌──────────────────────┐
-│ «enum» Topping       │
-│ CHEESE, OLIVE, ...   │
-└──────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                           <<interface>>                                  │
+│                         PricingStrategy                                  │
+│  ──────────────────────────────────────────────                         │
+│  + price(pizza): int                                                     │
+├──────────────────────────────────────────────────────────────────────────┤
+│           ▲                              ▲                               │
+│           │                              │                               │
+│  CatalogPricingStrategy      PercentageDiscountStrategy                  │
+│  (uses PricingCatalog)       (decorates / wraps another strategy)        │
+└──────────────────────────────────────────────────────────────────────────┘
 
-┌──────────────────────┐
-│ Pizza                │
-│ - base: Base         │
-│ - size: Size         │
-│ - toppings: List<>   │
-│ + getters            │  ← NO getPrice() that hits static catalog
-└──────────────────────┘
+┌─────────────────┐  creates  ┌─────────────────┐  uses   ┌─────────────────┐
+│ CatalogFactory  │──────────>│ PricingCatalog  │<────────│ CatalogPricing  │
+│                 │           │                 │         │ Strategy        │
+│ + default()     │           │ - basePrices{}  │         │ - catalog       │
+│ + nycPremium()  │           │ - sizePrices{}  │         │ + price(pizza)  │
+└─────────────────┘           │ - toppingPrices │         └─────────────────┘
+                              │ + getBasePrice()│
+                              │ + getSizePrice()│
+                              │ + getTopping()  │
+                              └─────────────────┘
+                                       ▲
+                                       │ looked up by
+                              ┌────────┴────────┐
+                              │ StoreCatalog    │
+                              │ Registry        │
+                              │ storeId→catalog │
+                              │ + pricingService│
+                              │   For(storeId)  │
+                              └────────┬────────┘
+                                       │ creates
+                                       ▼
+┌─────────────────┐  uses   ┌─────────────────┐  prices  ┌─────────────────┐
+│  PizzaBuilder   │────────>│ PricingService  │─────────>│  Pizza / Order  │
+│                 │         │                 │          │                 │
+│ + base()        │         │ - strategy      │          │ Pizza: data only│
+│ + size()        │         │ + pricePizza()  │          │ Order: pizzas[] │
+│ + addTopping()  │         │ + priceOrder()  │          │ NO getPrice()   │
+│ + build()       │         └─────────────────┘          │ with static cat │
+└─────────────────┘                                      └─────────────────┘
 
-┌──────────────────────┐
-│ Order                │
-│ - pizzas: List<Pizza>│
-└──────────────────────┘
-
-┌──────────────────────┐
-│ PricingCatalog       │
-│ - basePrices: Map    │
-│ - sizePrices: Map    │
-│ - toppingPrices: Map │
-│ + getBasePrice()     │
-│ + getSizePrice()     │
-│ + getToppingPrice()  │  ← throws if missing
-└──────────────────────┘
-
-┌─────────────────────────────┐
-│ «interface» PricingStrategy │
-│ + price(Pizza): int         │
-└──────────────┬──────────────┘
-               │
-               ▼
-┌─────────────────────────────┐
-│ CatalogPricingStrategy      │
-│ - catalog: PricingCatalog   │  ← injected instance (NOT static)
-│ + price(Pizza)              │
-└─────────────────────────────┘
-
-┌──────────────────────┐
-│ PricingService       │
-│ - strategy: Strategy │
-│ + pricePizza()       │
-│ + priceOrder()       │
-└──────────────────────┘
-
-┌──────────────────────────┐
-│ StoreCatalogRegistry     │
-│ - storeToCatalog: Map    │
-│ + getCatalog(storeId)    │
-│ + register(store, cat)   │
-└──────────────────────────┘
+┌──────────┐  ┌──────────┐  ┌──────────┐
+│ <<enum>> │  │ <<enum>> │  │ <<enum>> │
+│ Base     │  │ Size     │  │ Topping  │
+└──────────┘  └──────────┘  └──────────┘
 ```
 
 ---
 
-## Design Patterns & SOLID
+## Design Patterns Used
 
-| Pattern / Principle | Where | Why |
-|---------------------|-------|-----|
-| **Strategy** | `PricingStrategy` | Inject different pricing (store catalog, promo, happy-hour) without changing Pizza |
-| **Dependency Injection** | Catalog into Strategy; Strategy into Service | Fixes static-catalog / multi-store bug |
-| **Registry** | `StoreCatalogRegistry` | `storeId → PricingCatalog` |
-| **S** | Pizza ≠ pricing; Catalog ≠ calculation | Price change ≠ Pizza change |
-| **O** | New topping = enum + map entry | No new Strategy class per topping |
-| **L** | Any `PricingStrategy` substitutable | Service doesn't care which |
-| **I** | Strategy has one method: `price(Pizza)` | Thin interface |
-| **D** | Service depends on `PricingStrategy` abstraction | Not on concrete catalog maps |
+| Pattern | Where Used | Why |
+|---------|-----------|-----|
+| **Strategy** | `PricingStrategy`, `CatalogPricingStrategy`, `PercentageDiscountStrategy` | Different pricing algorithms (catalog lookup vs % off). Swap without changing `PricingService` or `Pizza`. **This is the core interview ask: inject pricing dependency.** |
+| **Factory** | `CatalogFactory` | Centralize seeding of in-memory catalogs per store. Hides map construction from callers. |
+| **Builder** | `Pizza.Builder` / `PizzaBuilder` | Pizza has base + size + variable toppings. Avoids telescoping constructors and invalid half-built pizzas. |
+| **Registry** | `StoreCatalogRegistry` | `storeId → PricingCatalog`. Multi-store lookup without static globals. |
+| **Decorator** (optional) | `PercentageDiscountStrategy` wraps another strategy | Add promo behavior without modifying catalog strategy (OCP). |
+| **Dependency Injection** | Catalog → Strategy → Service | Fixes static-catalog bug; enables multi-store + unit tests. |
 
-> Interviewer quote theme: *"Key gap = injecting pricing dependency."* Strategy + DI is the answer — not more StoreManager ceremony.
+---
+
+## SOLID Principles Applied
+
+| Principle | How Applied |
+|-----------|------------|
+| **S - Single Responsibility** | `Pizza` = product config. `PricingCatalog` = price data. `PricingStrategy` = price algorithm. `PricingService` = orchestration. `StoreCatalogRegistry` = store→catalog map. Price change does **not** require editing `Pizza`. |
+| **O - Open/Closed** | New topping = enum constant + catalog map entry. New pricing rule = new `PricingStrategy` impl (or decorator). Existing `PricingService` / `Pizza` **unchanged**. **Not** a new class per topping. |
+| **L - Liskov Substitution** | Any `PricingStrategy` (`CatalogPricingStrategy`, `PercentageDiscountStrategy`) can replace another inside `PricingService`. Caller does not know which. |
+| **I - Interface Segregation** | `PricingStrategy` has **one** method: `price(Pizza)`. Implementors are not forced to implement order APIs, store APIs, or persistence. |
+| **D - Dependency Inversion** | `PricingService` depends on `PricingStrategy` **interface**, not `CatalogPricingStrategy` or raw maps. High-level module does not depend on low-level `EnumMap` details. |
 
 ---
 
 ## Code Implementation
 
-### 1. Enums (not class-per-variant)
+### Enums
 
 ```java
+// ============================================================================
+// WHY ENUMS? Type safety. "CHEESE" as String can be "cheese" / "Cheese" / typo.
+// Compiler catches invalid values. Matches parking-lot VehicleType / SpotSize.
+//
+// WHY NOT a class per topping?
+//   Interview anti-pattern: ThinCrustStrategy, CheeseToppingStrategy, ...
+//   New SKU must NOT require a new .java file. Enums + catalog maps scale.
+// ============================================================================
+
 public enum Base {
-    THIN, THICK, CHEESE_BURST
+    THIN,
+    THICK,
+    CHEESE_BURST
 }
 
 public enum Size {
-    SMALL, MEDIUM, LARGE
+    SMALL,
+    MEDIUM,
+    LARGE
 }
 
 public enum Topping {
-    CHEESE, MUSHROOM, OLIVE, JALAPENO, PEPPERONI, ONION
+    CHEESE,
+    MUSHROOM,
+    OLIVE,
+    JALAPENO,
+    PEPPERONI,
+    ONION
 }
 ```
 
-**Why enums not classes?** Adding `PINEAPPLE` = one enum constant + one catalog price. Not `PineappleTopping implements ToppingStrategy`.
-
----
-
-### 2. Domain entities (data only)
+### Model Classes
 
 ```java
 import java.util.ArrayList;
@@ -244,31 +340,90 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 
+// ============================================================================
+// MODEL: Pizza
+// OOP: Encapsulation + Immutability after build.
+// WHY no getPrice()? Price depends on injected catalog (which store?).
+// Putting price on Pizza OR calling static PriceCatalog = L5 multi-store fail.
+// ============================================================================
 public final class Pizza {
     private final Base base;
     private final Size size;
     private final List<Topping> toppings;
 
-    public Pizza(Base base, Size size, List<Topping> toppings) {
-        this.base = Objects.requireNonNull(base, "base required");
-        this.size = Objects.requireNonNull(size, "size required");
-        this.toppings = List.copyOf(toppings == null ? List.of() : toppings);
+    private Pizza(Base base, Size size, List<Topping> toppings) {
+        this.base = base;
+        this.size = size;
+        this.toppings = List.copyOf(toppings);
     }
 
     public Base getBase() { return base; }
     public Size getSize() { return size; }
     public List<Topping> getToppings() { return toppings; }
 
-    // NO getPrice() here that calls static PriceCatalog.
-    // Pricing is a separate concern → PricingService + injected strategy.
+    // ------------------------------------------------------------------------
+    // PATTERN: Builder
+    // WHY? Base + size required; toppings optional/variable.
+    // Validates invariants at build() — never return half-built pizza.
+    // ------------------------------------------------------------------------
+    public static final class Builder {
+        private Base base;
+        private Size size;
+        private final List<Topping> toppings = new ArrayList<>();
+
+        public Builder base(Base base) {
+            this.base = base;
+            return this;
+        }
+
+        public Builder size(Size size) {
+            this.size = size;
+            return this;
+        }
+
+        public Builder addTopping(Topping topping) {
+            this.toppings.add(Objects.requireNonNull(topping));
+            return this;
+        }
+
+        public Builder addToppings(List<Topping> toppings) {
+            for (Topping t : toppings) {
+                addTopping(t);
+            }
+            return this;
+        }
+
+        public Pizza build() {
+            if (base == null) {
+                throw new IllegalArgumentException("base required");
+            }
+            if (size == null) {
+                throw new IllegalArgumentException("size required");
+            }
+            return new Pizza(base, size, toppings);
+        }
+    }
 }
 
+// ============================================================================
+// MODEL: Order
+// WHY separate from Pizza? One checkout can contain many pizzas.
+// Order total = sum of line prices (computed by PricingService, not stored here
+// until you add persistence snapshots).
+// ============================================================================
 public final class Order {
+    private final String orderId;
     private final List<Pizza> pizzas = new ArrayList<>();
+
+    public Order(String orderId) {
+        this.orderId = Objects.requireNonNull(orderId);
+    }
 
     public void addPizza(Pizza pizza) {
         pizzas.add(Objects.requireNonNull(pizza));
     }
+
+    public String getOrderId() { return orderId; }
 
     public List<Pizza> getPizzas() {
         return Collections.unmodifiableList(pizzas);
@@ -276,15 +431,21 @@ public final class Order {
 }
 ```
 
----
-
-### 3. PricingCatalog — Map lookups (instance, not static)
+### Pricing Catalog (Map lookups — instance, NOT static)
 
 ```java
 import java.util.EnumMap;
 import java.util.Map;
 import java.util.Objects;
 
+// ============================================================================
+// PricingCatalog
+// WHY this class? Holds price DATA for ONE store / price world.
+// WHY EnumMap? O(1) lookup, type-safe keys, compact memory.
+// WHY INSTANCE fields (not static methods)?
+//   Static = one global price set forever → multi-store impossible + hard tests.
+//   Instance + DI = SFO catalog vs NYC catalog for the SAME Pizza object.
+// ============================================================================
 public final class PricingCatalog {
     private final Map<Base, Integer> basePrices;
     private final Map<Size, Integer> sizePrices;
@@ -311,10 +472,15 @@ public final class PricingCatalog {
         return requirePrice(toppingPrices, topping, "topping");
     }
 
+    /**
+     * WHY throw instead of return 0 / magic default 100?
+     *   0  → silent undercharge (topping free). Bad product + interview fail.
+     *   100 → invents prices. Hides misconfigured catalog.
+     * Fail-fast so ops fix catalog data.
+     */
     private static <T extends Enum<T>> int requirePrice(Map<T, Integer> map, T key, String kind) {
         Integer price = map.get(key);
         if (price == null) {
-            // NEVER return 0 — silent undercharge. Customer / QA / interviewer all hate this.
             throw new PriceNotFoundException("No price configured for " + kind + ": " + key);
         }
         return price;
@@ -328,9 +494,15 @@ public class PriceNotFoundException extends RuntimeException {
 }
 ```
 
-**Factory for a store's catalog (in-memory seed):**
+### Factory — seed catalogs
 
 ```java
+// ============================================================================
+// PATTERN: Factory
+// WHY? Callers should not hand-build three EnumMaps every time.
+// Centralizes demo / test seed data. In production this becomes a repository
+// that loads price_catalog_entries for a store_id into PricingCatalog.
+// ============================================================================
 public final class CatalogFactory {
     private CatalogFactory() {}
 
@@ -381,15 +553,22 @@ public final class CatalogFactory {
 }
 ```
 
----
-
-### 4. Strategy + PricingService (core DI)
+### Strategy + Service (core DI)
 
 ```java
+// ============================================================================
+// PATTERN: Strategy — THIS is the heart of the pizza LLD interview.
+// PricingService depends on this interface (SOLID-D), not on EnumMaps.
+// ============================================================================
 public interface PricingStrategy {
     int price(Pizza pizza);
 }
 
+// ============================================================================
+// CatalogPricingStrategy
+// SOLID (S): Only computes base+size+toppings from an injected catalog.
+// SOLID (D): Receives PricingCatalog via constructor (DI), never static calls.
+// ============================================================================
 public final class CatalogPricingStrategy implements PricingStrategy {
     private final PricingCatalog catalog;
 
@@ -408,13 +587,19 @@ public final class CatalogPricingStrategy implements PricingStrategy {
     }
 }
 
-// Optional later: promo / happy-hour without touching Pizza
+// ============================================================================
+// PATTERN: Decorator / wrapping Strategy
+// WHY? Promo without modifying CatalogPricingStrategy or Pizza (OCP).
+// ============================================================================
 public final class PercentageDiscountStrategy implements PricingStrategy {
     private final PricingStrategy delegate;
     private final int percentOff; // 0-100
 
     public PercentageDiscountStrategy(PricingStrategy delegate, int percentOff) {
-        this.delegate = delegate;
+        if (percentOff < 0 || percentOff > 100) {
+            throw new IllegalArgumentException("percentOff must be 0..100");
+        }
+        this.delegate = Objects.requireNonNull(delegate);
         this.percentOff = percentOff;
     }
 
@@ -425,6 +610,13 @@ public final class PercentageDiscountStrategy implements PricingStrategy {
     }
 }
 
+// ============================================================================
+// PricingService
+// SOLID (S): Orchestrates pricing for pizza/order. Does not own price tables.
+// SOLID (D): Depends on PricingStrategy abstraction.
+// WHY exists separate from Strategy? Mirrors parking ParkingService:
+//   service = use-case API; strategy = swappable algorithm.
+// ============================================================================
 public final class PricingService {
     private final PricingStrategy strategy;
 
@@ -433,7 +625,7 @@ public final class PricingService {
     }
 
     public int pricePizza(Pizza pizza) {
-        return strategy.price(pizza);
+        return strategy.price(Objects.requireNonNull(pizza));
     }
 
     public int priceOrder(Order order) {
@@ -446,14 +638,18 @@ public final class PricingService {
 }
 ```
 
----
-
-### 5. Multi-store registry (after core pricing works)
+### Multi-store Registry
 
 ```java
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+// ============================================================================
+// StoreCatalogRegistry
+// WHY? Multi-store follow-up in interview: same Pizza, different prices.
+// WRONG response: put storeId on Pizza, or make PriceCatalog static.
+// RIGHT response: registry resolves catalog; DI into strategy/service.
+// ============================================================================
 public final class StoreCatalogRegistry {
     private final Map<String, PricingCatalog> storeToCatalog = new ConcurrentHashMap<>();
 
@@ -472,6 +668,10 @@ public final class StoreCatalogRegistry {
         return catalog;
     }
 
+    /**
+     * Wires Strategy + Service for a store in one place.
+     * WHY here? Callers shouldn't forget DI steps. End-to-end wiring lives once.
+     */
     public PricingService pricingServiceFor(String storeId) {
         PricingCatalog catalog = getCatalog(storeId);
         return new PricingService(new CatalogPricingStrategy(catalog));
@@ -479,77 +679,143 @@ public final class StoreCatalogRegistry {
 }
 ```
 
-**Critical insight (what candidates missed):**
+### Putting It Together (Demo)
 
 ```java
-// WRONG — static = one global price world
-int p = PriceCatalog.getBasePrice(base);  // Pizza or Service calling static
+import java.util.List;
 
-// RIGHT — instance injected per store
-PricingCatalog sfo = registry.getCatalog("SFO");
-PricingService svc = new PricingService(new CatalogPricingStrategy(sfo));
-int p = svc.pricePizza(pizza);
-```
-
-`Pizza` never knows which store's prices apply. Caller chooses catalog via DI.
-
----
-
-## End-to-End Wiring
-
-> Interviewer: *"Never finished wiring… how Pizza connects to pricing to get final total."*
-> This section is non-negotiable in the interview.
-
-```java
 public class PizzaPricingDemo {
     public static void main(String[] args) {
-        // 1. Seed per-store catalogs (in-memory)
+        // ── 1. Seed per-store catalogs (in-memory) ───────────────────────
         StoreCatalogRegistry registry = new StoreCatalogRegistry();
         registry.register("SFO", CatalogFactory.defaultStoreCatalog());
         registry.register("NYC", CatalogFactory.nycPremiumCatalog());
 
-        // 2. Build domain objects (no prices inside)
-        Pizza pizza1 = new Pizza(
-            Base.THIN,
-            Size.MEDIUM,
-            List.of(Topping.CHEESE, Topping.OLIVE)
-        );
-        Pizza pizza2 = new Pizza(
-            Base.CHEESE_BURST,
-            Size.LARGE,
-            List.of(Topping.PEPPERONI, Topping.MUSHROOM, Topping.JALAPENO)
-        );
+        // ── 2. Build domain objects with Builder (no prices inside) ──────
+        Pizza pizza1 = new Pizza.Builder()
+            .base(Base.THIN)
+            .size(Size.MEDIUM)
+            .addTopping(Topping.CHEESE)
+            .addTopping(Topping.OLIVE)
+            .build();
 
-        Order order = new Order();
+        Pizza pizza2 = new Pizza.Builder()
+            .base(Base.CHEESE_BURST)
+            .size(Size.LARGE)
+            .addToppings(List.of(Topping.PEPPERONI, Topping.MUSHROOM, Topping.JALAPENO))
+            .build();
+
+        Order order = new Order("ord-1");
         order.addPizza(pizza1);
         order.addPizza(pizza2);
 
-        // 3. Wire pricing for a store (DI)
+        // ── 3. Wire pricing for stores (DI) ───────────────────────────────
         PricingService sfoPricing = registry.pricingServiceFor("SFO");
         PricingService nycPricing = registry.pricingServiceFor("NYC");
 
-        // 4. Execute end-to-end
+        // ── 4. Execute end-to-end ─────────────────────────────────────────
         System.out.println("SFO pizza1 = " + sfoPricing.pricePizza(pizza1));
+        // THIN=100 + MEDIUM=100 + CHEESE=30 + OLIVE=35 = 265
+
         System.out.println("SFO order  = " + sfoPricing.priceOrder(order));
         System.out.println("NYC order  = " + nycPricing.priceOrder(order)); // different $
 
-        // Manual check for pizza1 @ SFO:
-        // THIN=100 + MEDIUM=100 + CHEESE=30 + OLIVE=35 = 265
+        // ── 5. Promo via Decorator strategy (OCP) ─────────────────────────
+        PricingService sfoPromo = new PricingService(
+            new PercentageDiscountStrategy(
+                new CatalogPricingStrategy(registry.getCatalog("SFO")), 10));
+        System.out.println("SFO pizza1 @10% off = " + sfoPromo.pricePizza(pizza1));
     }
 }
 ```
 
-### Request flow (say this while coding)
+**Critical WRONG vs RIGHT (say this):**
+
+```java
+// WRONG — static = one global price world (multi-store broken)
+int p = PriceCatalog.getBasePrice(base);
+
+// RIGHT — instance injected per store
+PricingService svc = registry.pricingServiceFor("SFO");
+int p = svc.pricePizza(pizza);
+```
+
+---
+
+## Request Flows
+
+### Price One Pizza Flow
 
 ```
-1. Client builds Pizza(base, size, toppings)          → data only
-2. Client resolves storeId → PricingCatalog           → StoreCatalogRegistry
-3. Client builds CatalogPricingStrategy(catalog)      → Strategy + DI
-4. Client builds PricingService(strategy)
-5. PricingService.pricePizza(pizza)
-      → strategy.price(pizza)
-         → catalog.getBasePrice + getSizePrice + Σ getToppingPrice
-6. Missing map entry → PriceNotFoundException (not 0)
+Client builds Pizza (Builder)
+    │
+    ▼
+Client chooses storeId ("SFO")
+    │
+    ▼
+StoreCatalogRegistry.pricingServiceFor(storeId)
+    │
+    ├── getCatalog(storeId)                         [Registry]
+    │
+    ├── new CatalogPricingStrategy(catalog)         [Strategy + DI]
+    │
+    └── new PricingService(strategy)
+            │
+            ▼
+PricingService.pricePizza(pizza)
+    │
+    ├── PricingStrategy.price(pizza)                [Strategy Pattern]
+    │       │
+    │       ├── catalog.getBasePrice(base)          [EnumMap lookup]
+    │       ├── catalog.getSizePrice(size)
+    │       └── Σ catalog.getToppingPrice(t)
+    │               │
+    │               └── missing key?
+    │                     └── throw PriceNotFoundException   [never return 0]
+    │
+    └── return total cents
+```
+
+### Price Order Flow
+
+```
+Order (pizzas[])
+    │
+    ▼
+PricingService.priceOrder(order)
+    │
+    ├── for each pizza:
+    │       strategy.price(pizza)                   [reuse same Strategy]
+    │
+    └── return sum
+```
+
+### Multi-Store Same Pizza Flow
+
+```
+Same Pizza object
+    │
+    ├── registry.pricingServiceFor("SFO").pricePizza(pizza) → e.g. 230
+    │
+    └── registry.pricingServiceFor("NYC").pricePizza(pizza) → e.g. 310
+
+WHY different?
+  Different PricingCatalog instances injected into Strategy.
+  Pizza unchanged. Catalog changed. That is the DI lesson.
+```
+
+### Promo Pricing Flow
+
+```
+CatalogPricingStrategy(catalog)
+    │
+    ▼ wrapped by
+PercentageDiscountStrategy(delegate, 10%)          [Decorator / Strategy]
+    │
+    ▼ injected into
+PricingService
+    │
+    └── pricePizza → delegate.price → apply % off
 ```
 
 ---
@@ -558,96 +824,149 @@ public class PizzaPricingDemo {
 
 ```java
 import org.junit.jupiter.api.Test;
+import java.util.EnumMap;
+import java.util.List;
+import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
+
+// ============================================================================
+// TESTS: Critical paths + interview edge cases.
+// Each name = scenario + expected behavior (parking-lot style).
+// ============================================================================
 
 class PricingServiceTest {
 
+    // 1. Happy path: base + size + toppings
     @Test
-    void pricesPizza_basePlusSizePlusToppings() {
+    void pricePizza_basePlusSizePlusToppings() {
         PricingService svc = new PricingService(
             new CatalogPricingStrategy(CatalogFactory.defaultStoreCatalog())
         );
-        Pizza pizza = new Pizza(Base.THIN, Size.MEDIUM, List.of(Topping.CHEESE, Topping.OLIVE));
+        Pizza pizza = new Pizza.Builder()
+            .base(Base.THIN)
+            .size(Size.MEDIUM)
+            .addTopping(Topping.CHEESE)
+            .addTopping(Topping.OLIVE)
+            .build();
         // 100 + 100 + 30 + 35 = 265
         assertEquals(265, svc.pricePizza(pizza));
     }
 
+    // 2. Order sums all pizzas
     @Test
-    void pricesOrder_sumsAllPizzas() {
+    void priceOrder_sumsAllPizzas() {
         PricingService svc = new PricingService(
             new CatalogPricingStrategy(CatalogFactory.defaultStoreCatalog())
         );
-        Order order = new Order();
-        order.addPizza(new Pizza(Base.THIN, Size.SMALL, List.of()));           // 100+50=150
-        order.addPizza(new Pizza(Base.THICK, Size.SMALL, List.of(Topping.ONION))); // 120+50+20=190
+        Order order = new Order("o1");
+        order.addPizza(new Pizza.Builder().base(Base.THIN).size(Size.SMALL).build()); // 150
+        order.addPizza(new Pizza.Builder()
+            .base(Base.THICK).size(Size.SMALL).addTopping(Topping.ONION).build());    // 190
         assertEquals(340, svc.priceOrder(order));
     }
 
+    // 3. Empty toppings is valid (base + size only)
+    @Test
+    void pricePizza_noToppings_basePlusSizeOnly() {
+        PricingService svc = new PricingService(
+            new CatalogPricingStrategy(CatalogFactory.defaultStoreCatalog())
+        );
+        Pizza pizza = new Pizza.Builder().base(Base.THIN).size(Size.LARGE).build();
+        assertEquals(250, svc.pricePizza(pizza)); // 100 + 150
+    }
+
+    // 4. Duplicate topping charged twice (List semantics)
+    @Test
+    void pricePizza_doubleCheese_chargesTwice() {
+        PricingService svc = new PricingService(
+            new CatalogPricingStrategy(CatalogFactory.defaultStoreCatalog())
+        );
+        Pizza pizza = new Pizza.Builder()
+            .base(Base.THIN)
+            .size(Size.SMALL)
+            .addTopping(Topping.CHEESE)
+            .addTopping(Topping.CHEESE)
+            .build();
+        // 100 + 50 + 30 + 30 = 210
+        assertEquals(210, svc.pricePizza(pizza));
+    }
+
+    // 5. Missing catalog price MUST throw — never return 0
     @Test
     void missingToppingPrice_throwsNotZero() {
-        Map<Base, Integer> bases = Map.of(Base.THIN, 100);
-        Map<Size, Integer> sizes = Map.of(Size.SMALL, 50);
-        Map<Topping, Integer> toppings = Map.of(Topping.CHEESE, 30);
+        Map<Base, Integer> bases = new EnumMap<>(Base.class);
+        bases.put(Base.THIN, 100);
+        Map<Size, Integer> sizes = new EnumMap<>(Size.class);
+        sizes.put(Size.SMALL, 50);
+        Map<Topping, Integer> toppings = new EnumMap<>(Topping.class);
+        toppings.put(Topping.CHEESE, 30);
         // OLIVE intentionally missing
-        PricingCatalog incomplete = new PricingCatalog(
-            new EnumMap<>(bases), new EnumMap<>(sizes), new EnumMap<>(toppings)
+
+        PricingService svc = new PricingService(
+            new CatalogPricingStrategy(new PricingCatalog(bases, sizes, toppings))
         );
-        PricingService svc = new PricingService(new CatalogPricingStrategy(incomplete));
-        Pizza pizza = new Pizza(Base.THIN, Size.SMALL, List.of(Topping.OLIVE));
+        Pizza pizza = new Pizza.Builder()
+            .base(Base.THIN).size(Size.SMALL).addTopping(Topping.OLIVE).build();
 
         assertThrows(PriceNotFoundException.class, () -> svc.pricePizza(pizza));
     }
 
+    // 6. Builder rejects incomplete pizza
+    @Test
+    void builder_missingBase_throws() {
+        assertThrows(IllegalArgumentException.class, () ->
+            new Pizza.Builder().size(Size.SMALL).build());
+    }
+
+    // 7. Same pizza, different stores → different prices (DI proof)
     @Test
     void samePizza_differentStores_differentPrices() {
         StoreCatalogRegistry registry = new StoreCatalogRegistry();
         registry.register("SFO", CatalogFactory.defaultStoreCatalog());
         registry.register("NYC", CatalogFactory.nycPremiumCatalog());
 
-        Pizza pizza = new Pizza(Base.THIN, Size.MEDIUM, List.of(Topping.CHEESE));
-        int sfo = registry.pricingServiceFor("SFO").pricePizza(pizza); // 100+100+30=230
-        int nyc = registry.pricingServiceFor("NYC").pricePizza(pizza); // 140+130+40=310
+        Pizza pizza = new Pizza.Builder()
+            .base(Base.THIN).size(Size.MEDIUM).addTopping(Topping.CHEESE).build();
+
+        int sfo = registry.pricingServiceFor("SFO").pricePizza(pizza); // 230
+        int nyc = registry.pricingServiceFor("NYC").pricePizza(pizza); // 310
 
         assertEquals(230, sfo);
         assertEquals(310, nyc);
         assertNotEquals(sfo, nyc);
     }
 
+    // 8. Unknown store throws
     @Test
-    void pizzaDoesNotEmbedStaticPricing() {
-        // Compile-time design check: Pizza has no getPrice().
-        // If you add Pizza.getPrice() that calls static catalog — you failed multi-store.
-        Pizza pizza = new Pizza(Base.THIN, Size.LARGE, List.of());
-        assertNotNull(pizza.getBase());
-        // pricing only via service:
-        assertEquals(250, // 100+150
-            new PricingService(new CatalogPricingStrategy(CatalogFactory.defaultStoreCatalog()))
-                .pricePizza(pizza));
+    void registry_unknownStore_throws() {
+        StoreCatalogRegistry registry = new StoreCatalogRegistry();
+        assertThrows(IllegalArgumentException.class, () ->
+            registry.pricingServiceFor("LAX"));
     }
 
+    // 9. Percentage discount decorator
     @Test
-    void extendTopping_withoutNewClass() {
-        // New product option = enum + map entry. Zero new Strategy classes.
-        // (In real code you'd add Topping.PINEAPPLE to enum and put price in catalog.)
-        Map<Topping, Integer> toppings = new EnumMap<>(Topping.class);
-        toppings.put(Topping.CHEESE, 30);
-        // ... all required toppings for test ...
-        assertTrue(true); // document the extensibility story in interview
+    void promo_tenPercentOff_applies() {
+        PricingStrategy base = new CatalogPricingStrategy(CatalogFactory.defaultStoreCatalog());
+        PricingService svc = new PricingService(new PercentageDiscountStrategy(base, 10));
+        Pizza pizza = new Pizza.Builder().base(Base.THIN).size(Size.SMALL).build(); // 150
+        assertEquals(135, svc.pricePizza(pizza)); // 150 - 15
     }
 }
 ```
 
-### Edge-case table (say these without being prompted)
+### Edge-case table (say without being prompted)
 
 | Case | Behavior |
 |------|----------|
-| Empty toppings list | Valid — price = base + size only |
-| Duplicate topping (double cheese) | Charge twice (List, not Set) — confirm with interviewer |
-| Null base / size | Reject in Pizza constructor |
+| Empty toppings | Valid — base + size only |
+| Double cheese | Charge twice (`List`) |
+| Null / missing base or size | Builder throws |
 | Unknown storeId | `IllegalArgumentException` |
 | Catalog missing price | `PriceNotFoundException` — **never 0** |
-| New topping launched | Add enum + catalog price; no new class |
-| Promo 10% off | Wrap strategy: `new PercentageDiscountStrategy(inner, 10)` |
+| New topping launched | Enum + map entry; no new Strategy class |
+| Promo 10% off | Wrap with `PercentageDiscountStrategy` |
+| Catalog prices change later | Historical orders should snapshot (persistence note) |
 
 ---
 
@@ -655,51 +974,77 @@ class PricingServiceTest {
 
 ### Opening script (60 seconds)
 
-1. Ask clarifying questions (table above).
-2. State assumptions: formula, no tax, enums only, throw on missing price.
+1. Ask clarifying questions.
+2. State assumptions: formula, no tax, enums, throw on missing price.
 3. Sketch: Enums → Pizza/Order (data) → PricingCatalog (maps) → PricingStrategy (DI) → PricingService.
-4. Explicitly say: **"I will not create a class per topping — that explodes. Maps + enums scale."**
+4. Say explicitly: **"No class per topping — that explodes. Maps + enums scale."**
 5. Code core path first. Multi-store only after `pricePizza` works end-to-end.
 
-### When interviewer says "what if multiple stores?"
+### Multi-store follow-up
 
-> "Pizza definition is store-agnostic. Prices live in per-store `PricingCatalog` instances. I'll inject the catalog via `CatalogPricingStrategy` into `PricingService`. Static catalog would break this — that's why catalog is an instance, not static methods."
+> "Pizza is store-agnostic. Prices live in per-store `PricingCatalog` instances. Inject via `CatalogPricingStrategy` into `PricingService`. Static catalog breaks this."
 
-### When interviewer asks about Strategy
+### Strategy follow-up
 
-> "`PricingStrategy.price(Pizza)` is the seam. Default impl reads a catalog. Later I can wrap with discount strategy without changing Pizza or Service callers."
+> "`PricingStrategy.price(Pizza)` is the seam. Default reads catalog. Promo wraps strategy. Pizza and Service stay closed for modification."
 
-### When they ask default/switch case for missing enum
+### Switch default / missing price
 
-> "Returning 0 hides data bugs and undercharges. Returning a magic default (100) invents prices. Correct product behavior: **fail fast** with `PriceNotFoundException` so ops fix the catalog."
+> "Return 0 = undercharge. Magic default = invent prices. Fail fast with `PriceNotFoundException`."
 
-### What "done" looks like in the interview
+### Done checklist
 
 - [ ] Clarifying questions asked
 - [ ] Enums + Map catalog (no class explosion)
 - [ ] Pizza has **no** static pricing calls
-- [ ] Strategy interface + injected catalog instance
+- [ ] Strategy + injected catalog instance
+- [ ] Builder for Pizza
 - [ ] PricingService.pricePizza + priceOrder
-- [ ] One runnable demo / test that prints a total
+- [ ] Runnable demo prints a total
 - [ ] Missing price throws
-- [ ] Multi-store shown as registry → different catalogs → different totals for **same** Pizza
+- [ ] Multi-store: same Pizza, different catalogs, different totals
 
 ---
 
-## Summary (cheat sheet)
+## Summary of Patterns & Principles
 
 ```
-ASK FIRST     → scope, formula, multi-store?, missing price behavior
-DATA          → Base/Size/Topping enums, Pizza, Order
-PRICES        → PricingCatalog (EnumMap), instance NOT static
-STRATEGY      → PricingStrategy + CatalogPricingStrategy (DI seam)
-SERVICE       → PricingService uses strategy
-MULTI-STORE   → StoreCatalogRegistry: storeId → catalog → service
-EXTEND        → new topping = enum + map entry (Open/Closed)
-EDGE          → throw on missing price, never return 0
-WIRE          → demo main that builds pizza → service → prints total
-AVOID         → class-per-variant, static catalog, peripheral Store UI before core DI
+┌─────────────────────────────────────────────────────────────────┐
+│  DESIGN PATTERNS                                                │
+│                                                                 │
+│  Strategy   → PricingStrategy, CatalogPricing, % Discount       │
+│  Factory    → CatalogFactory (seed per-store catalogs)          │
+│  Builder    → Pizza.Builder (base/size/toppings)                │
+│  Registry   → StoreCatalogRegistry (storeId → catalog)          │
+│  Decorator  → PercentageDiscountStrategy wraps another strategy │
+│  DI         → Catalog → Strategy → Service (NOT static)         │
+│                                                                 │
+│  SOLID PRINCIPLES                                               │
+│                                                                 │
+│  S → Pizza=data, Catalog=prices, Strategy=algo, Service=API     │
+│  O → New topping = enum + map; new rule = new Strategy          │
+│  L → Any PricingStrategy interchangeable in PricingService      │
+│  I → PricingStrategy has 1 method: price(Pizza)                 │
+│  D → PricingService depends on interface, not EnumMaps          │
+│                                                                 │
+│  OOP CONCEPTS                                                   │
+│                                                                 │
+│  Encapsulation → Catalog hides maps; Pizza hides toppings list  │
+│  Composition   → Store HAS catalog; Strategy HAS catalog        │
+│  Abstraction   → PricingStrategy hides algorithm                │
+│  Polymorphism  → Catalog vs Discount strategies                 │
+│  Immutability  → Pizza after build()                            │
+│                                                                 │
+│  KEY INTERVIEW TALKING POINTS                                   │
+│                                                                 │
+│  1. Ask clarify BEFORE coding                                   │
+│  2. No class-per-topping (use Enum + Map)                       │
+│  3. Inject catalog instance — never static PriceCatalog         │
+│  4. Throw on missing price — never return 0                     │
+│  5. Wire end-to-end: Pizza → Service → Strategy → Catalog       │
+│  6. Multi-store = different catalogs, same Pizza                │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-**One sentence for the loop:**  
-*Pizza is data; catalog is price data; strategy is injected behavior; service wires them — that's the LLD they wanted.*
+**One-line loop close:**  
+*Pizza is data; catalog is price data; strategy is injected behavior; service wires them — that is the LLD they wanted.*

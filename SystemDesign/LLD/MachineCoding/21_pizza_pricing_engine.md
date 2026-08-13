@@ -16,6 +16,7 @@
 11. [Edge Cases & Tests](#edge-cases--tests)
 12. [Interview Talking Points](#interview-talking-points)
 13. [Summary of Patterns & Principles](#summary-of-patterns--principles)
+14. [Deep Dive: Why Each Pattern & Principle (Interview Learning)](#deep-dive-why-each-pattern--principle-interview-learning)
 
 ---
 
@@ -1048,3 +1049,643 @@ class PricingServiceTest {
 
 **One-line loop close:**  
 *Pizza is data; catalog is price data; strategy is injected behavior; service wires them — that is the LLD they wanted.*
+
+---
+
+## Deep Dive: Why Each Pattern & Principle (Interview Learning)
+
+> **How to use this section:** The Summary above is for recall. This section is for **understanding**. In an interview you must explain **why** each pattern exists in *this* design — not just name-drop.
+>
+> **Core idea (repeat until automatic):**
+> **Pizza = data · Catalog = price data · Strategy = injected behavior · Service = wires them.**
+
+---
+
+### 1. Strategy Pattern ⭐⭐⭐⭐⭐
+
+**Most important pattern in this design.**
+
+**Problem:** Pricing can have different algorithms.
+
+| Today | Tomorrow | Later |
+|-------|----------|-------|
+| Base + Size + Toppings | Base + Size + Toppings − 20% | Festival / happy hour / membership / store-specific |
+
+We do **not** want `PricingService` to grow a huge `if-else`.
+
+#### Without Strategy (bad)
+
+```java
+class PricingService {
+    int price(Pizza pizza) {
+        if (normalPricing) {
+            // calculate normal price
+        } else if (discountPricing) {
+            // calculate discount
+        } else if (festivalPricing) {
+            // calculate festival price
+        }
+        return price;
+    }
+}
+```
+
+Every new pricing rule **modifies** `PricingService` → breaks **Open/Closed**.
+
+#### With Strategy (good)
+
+```java
+interface PricingStrategy {
+    int price(Pizza pizza);
+}
+```
+
+```text
+PricingStrategy
+       ↑
+       |
+----------------------------
+|                          |
+CatalogPricingStrategy     DiscountStrategy
+```
+
+`PricingService` does not care **how** price is calculated:
+
+```java
+class PricingService {
+    private final PricingStrategy strategy;
+
+    PricingService(PricingStrategy strategy) {
+        this.strategy = strategy;
+    }
+
+    int pricePizza(Pizza pizza) {
+        return strategy.price(pizza);
+    }
+}
+```
+
+This is also **Dependency Injection**.
+
+#### Real-world analogy (payment)
+
+```text
+PaymentStrategy
+       ↑
+------------------------
+|          |           |
+UPI      Card       Wallet
+```
+
+Checkout service does not know how UPI/Card works.
+
+Same idea:
+
+```text
+PricingStrategy
+       ↑
+-----------------------------
+Normal    Discount    Festival
+```
+
+#### Interview line
+
+> "I use Strategy because pricing is variable behavior. It lets me add or replace pricing algorithms without modifying the service that orchestrates pricing."
+
+---
+
+### 2. Factory Pattern ⭐⭐⭐⭐
+
+Factory = **centralize object creation.**
+
+Here:
+
+```java
+CatalogFactory.defaultStoreCatalog();
+CatalogFactory.nycPremiumCatalog();
+```
+
+Instead of every caller doing:
+
+```java
+Map<Base, Integer> bases = ...
+Map<Size, Integer> sizes = ...
+Map<Topping, Integer> toppings = ...
+return new PricingCatalog(...);
+```
+
+put creation in one place:
+
+```text
+CatalogFactory
+      |
+      | creates
+      ↓
+PricingCatalog
+```
+
+#### Why useful?
+
+Tomorrow you may have SFO / NYC / London / Premium / Test catalogs:
+
+```java
+CatalogFactory.sfo();
+CatalogFactory.nyc();
+CatalogFactory.london();
+```
+
+#### Important distinction (frequently asked)
+
+| Factory | Strategy |
+|---------|----------|
+| **Creates** the catalog | **Calculates** the price |
+| Object construction | Algorithm / behavior |
+
+```text
+Factory  → creates Catalog
+Strategy → calculates Price
+```
+
+#### Interview line
+
+> "Factory centralizes how catalogs are seeded. It does not calculate price — Strategy does."
+
+---
+
+### 3. Builder Pattern ⭐⭐⭐⭐
+
+Pizza shape:
+
+```text
+Pizza
+ ├── Base (required)
+ ├── Size (required)
+ └── Toppings (0..N, optional/variable)
+```
+
+Ugly constructor (and worse if more fields appear):
+
+```java
+new Pizza(Base.THIN, Size.LARGE, List.of(CHEESE, OLIVE, MUSHROOM));
+```
+
+Later you risk **telescoping constructors**:
+
+```text
+base, size, toppings, stuffedCrust, extraSauce, extraCheese, ...
+```
+
+#### With Builder
+
+```java
+Pizza pizza = new Pizza.Builder()
+    .base(Base.THIN)
+    .size(Size.LARGE)
+    .addTopping(Topping.CHEESE)
+    .addTopping(Topping.OLIVE)
+    .build();
+```
+
+`build()` validates — never create `base=null` / `size=null`:
+
+```java
+if (base == null) throw new IllegalArgumentException("base required");
+if (size == null) throw new IllegalArgumentException("size required");
+```
+
+#### Interview line
+
+> "I use Builder because Pizza has required fields and a variable number of toppings, and Builder validates before construction."
+
+---
+
+### 4. Registry Pattern ⭐⭐⭐⭐
+
+Multiple stores:
+
+```text
+SFO → SFO prices
+NYC → NYC prices
+```
+
+Need:
+
+```text
+storeId → PricingCatalog
+```
+
+That is `StoreCatalogRegistry`:
+
+```text
+Registry
+"SFO" → Catalog A
+"NYC" → Catalog B
+"LON" → Catalog C
+```
+
+```java
+registry.getCatalog("SFO");
+registry.pricingServiceFor("SFO"); // catalog → strategy → service wired
+```
+
+#### Why not static?
+
+**Bad:**
+
+```java
+PriceCatalog.getBasePrice(...);  // ONE global catalog forever
+```
+
+**Need:**
+
+```text
+SFO → different prices
+NYC → different prices
+```
+
+Registry + **instance** catalogs solve multi-store. Static catalog cannot.
+
+#### Interview line
+
+> "Registry maps storeId to the correct PricingCatalog so the same Pizza can be priced under different store price worlds."
+
+---
+
+### 5. Decorator Pattern ⭐⭐⭐⭐
+
+Normal price = ₹500. Want 10% off.
+
+You *could* edit `CatalogPricingStrategy` — that modifies existing code (bad OCP).
+
+Instead **wrap**:
+
+```text
+CatalogPricingStrategy
+        ↓
+PercentageDiscountStrategy
+        ↓
+PricingService
+```
+
+```java
+PricingStrategy normal = new CatalogPricingStrategy(catalog);
+PricingStrategy discount = new PercentageDiscountStrategy(normal, 10);
+
+discount.price(pizza);
+// internally: normal price → ₹500 → 10% off → ₹450
+```
+
+You can chain:
+
+```text
+CatalogPricingStrategy
+        ↓
+10% Discount
+        ↓
+Membership Discount
+        ↓
+Coupon
+```
+
+---
+
+### Strategy vs Decorator (interview trap)
+
+| Strategy | Decorator |
+|----------|-----------|
+| **Choose** an algorithm | **Add behavior around** an existing algorithm |
+| Normal vs Discount vs Festival | Normal → +10% off → +membership |
+
+```text
+Strategy:  Which algorithm should I use?
+Decorator: Keep this algorithm, wrap extra behavior on top.
+```
+
+`PercentageDiscountStrategy` in this design is a **Decorator that also implements Strategy** — common and powerful.
+
+#### Interview line
+
+> "Decorator wraps an existing PricingStrategy to add promo without modifying catalog pricing or Pizza."
+
+---
+
+### 6. Dependency Injection ⭐⭐⭐⭐⭐
+
+Not classic GoF, but critical here.
+
+**Bad (service creates dependency):**
+
+```java
+class PricingService {
+    private PricingCatalog catalog = new PricingCatalog(...);
+}
+```
+
+**Good (dependency injected):**
+
+```java
+class PricingService {
+    private final PricingStrategy strategy;
+
+    PricingService(PricingStrategy strategy) {
+        this.strategy = strategy;
+    }
+}
+```
+
+```text
+PricingService
+       ↓
+PricingStrategy
+       ↓
+PricingCatalog
+```
+
+Service does not create its dependency — caller provides it.
+
+#### Why useful?
+
+**Testing:** inject `FakePricingStrategy`.
+
+**Multi-store:**
+
+```text
+SFO → SFO Catalog → Strategy → Service
+NYC → NYC Catalog → Strategy → Service
+```
+
+Same Pizza, different pricing.
+
+#### Interview line
+
+> "DI fixes the static-catalog bug. Catalog and strategy are injected, so multi-store and unit tests become possible."
+
+---
+
+### 7. SOLID — SRP ⭐⭐⭐⭐⭐
+
+**Single Responsibility:** one class → one reason to change.
+
+```text
+Pizza                    → product configuration
+PricingCatalog           → price data
+PricingStrategy          → pricing algorithm
+PricingService           → orchestration / use case
+StoreCatalogRegistry     → store → catalog mapping
+```
+
+| Change | Touch only |
+|--------|------------|
+| Prices change | `PricingCatalog` — not `Pizza` |
+| Discount logic changes | `DiscountStrategy` — not `Pizza` / `PricingService` |
+
+#### Interview line
+
+> "Pizza is configuration; catalog is price data; strategy is behavior; service orchestrates. Each has one reason to change."
+
+---
+
+### 8. Open/Closed Principle ⭐⭐⭐⭐⭐
+
+**Open for extension, closed for modification.**
+
+#### New topping
+
+Do **not** create `MushroomTopping.java`.
+
+Do:
+
+```java
+enum Topping { CHEESE, MUSHROOM, OLIVE }
+// + add price in catalog map
+```
+
+#### New pricing rule (e.g. buy-2 → 20% off)
+
+Create `BuyTwoGetDiscountStrategy` — do **not** rewrite `PricingService`.
+
+#### Interview line
+
+> "New toppings = enum + catalog entry. New pricing rules = new Strategy. Existing service stays closed."
+
+---
+
+### 9. Liskov Substitution Principle
+
+Simple: any `PricingStrategy` impl can be passed where `PricingStrategy` is expected.
+
+```text
+CatalogPricingStrategy
+PercentageDiscountStrategy
+FestivalPricingStrategy
+```
+
+all work in:
+
+```java
+PricingService(PricingStrategy strategy)
+```
+
+Service does not break when you swap them.
+
+#### Interview line
+
+> "Any PricingStrategy implementation is usable wherever PricingStrategy is expected without breaking PricingService."
+
+---
+
+### 10. Interface Segregation Principle
+
+**Bad giant interface:**
+
+```java
+interface PricingStrategy {
+    pricePizza();
+    priceOrder();
+    saveCatalog();
+    getStore();
+    updateDatabase();
+    sendNotification();
+}
+```
+
+**Good small interface:**
+
+```java
+interface PricingStrategy {
+    int price(Pizza pizza);
+}
+```
+
+Implementors are not forced to implement unrelated APIs.
+
+#### Interview line
+
+> "PricingStrategy has one method so implementations stay focused — ISP."
+
+---
+
+### 11. Dependency Inversion Principle ⭐⭐⭐⭐⭐
+
+**Bad:** high-level depends on details
+
+```text
+PricingService → CatalogPricingStrategy → EnumMap
+```
+
+**Good:** high-level depends on abstraction
+
+```text
+             PricingStrategy  ← interface
+                  ↑
+PricingService ───┘
+                  │
+        CatalogPricingStrategy
+```
+
+```java
+// Service depends on PricingStrategy, NOT CatalogPricingStrategy / EnumMap
+```
+
+#### Interview line
+
+> "PricingService depends on the PricingStrategy abstraction, not a concrete catalog or EnumMap."
+
+---
+
+### 12. Encapsulation
+
+Hide internal state; expose controlled access.
+
+```java
+class PricingCatalog {
+    private final Map<Base, Integer> basePrices;
+    // outside cannot do: catalog.basePrices.put(...)
+    public int getBasePrice(Base base) { ... }
+}
+```
+
+Pizza similarly exposes toppings as an immutable/unmodifiable view — callers cannot mutate mid-pricing.
+
+#### Interview line
+
+> "Catalog and Pizza hide their maps/lists; mutation happens only through controlled APIs."
+
+---
+
+### 13. Abstraction
+
+Caller only knows:
+
+```java
+interface PricingStrategy {
+    int price(Pizza pizza);
+}
+```
+
+Does **not** need to know: EnumMap? DB? Discount? AI pricing?
+
+> "Give me the price." — that's abstraction.
+
+---
+
+### 14. Polymorphism
+
+```java
+PricingStrategy strategy = ...;  // Catalog or Discount
+strategy.price(pizza);           // correct impl runs
+```
+
+Same call site, different behavior — polymorphism via Strategy.
+
+---
+
+### 15. Immutability
+
+After:
+
+```java
+Pizza pizza = new Pizza.Builder()
+    .base(Base.THIN)
+    .size(Size.LARGE)
+    .build();
+```
+
+`base` / `size` / `toppings` cannot change (`final` + `List.copyOf`).
+
+**Why:** safe to pass around while pricing — no concurrent mutation of toppings mid-calc.
+
+---
+
+### How Everything Connects (do not memorize 15 islands)
+
+```text
+                Pizza.Builder
+                     |
+                     ↓
+                   Pizza
+                "just data"
+                     |
+        StoreCatalogRegistry
+              |
+              ↓
+        PricingCatalog
+        "price data"
+              |
+              ↓
+    CatalogPricingStrategy
+        "price algorithm"
+              |
+              ↓
+        PricingService
+       "orchestrates"
+```
+
+With promotion:
+
+```text
+CatalogPricingStrategy
+          ↓
+PercentageDiscountStrategy   ← Decorator
+          ↓
+     PricingService
+```
+
+---
+
+### One Walkthrough Connecting Everything
+
+**Pizza:** THIN + LARGE + CHEESE
+
+**SFO catalog:** THIN=₹100, LARGE=₹150, CHEESE=₹30
+
+| Step | Code / action | Pattern |
+|------|---------------|---------|
+| 1 | `new Pizza.Builder().base(THIN).size(LARGE).addTopping(CHEESE).build()` | **Builder** |
+| 2 | `registry.pricingServiceFor("SFO")` | **Registry** |
+| 3 | SFO → `PricingCatalog` | **Data** |
+| 4 | `new CatalogPricingStrategy(sfoCatalog)` | **Strategy + DI** |
+| 5 | `pricingService.pricePizza(pizza)` | **Service orchestration** |
+| 6 | 100 + 150 + 30 = **₹280** | Result |
+
+---
+
+### What To Say When Asked "Explain your patterns"
+
+**Weak (name-dropping):**
+
+> "I used Strategy, Factory, Builder, Registry, Decorator, SOLID..."
+
+**Strong (connected story):**
+
+> "I separated pizza configuration, pricing data, and pricing behavior.
+> **Builder** constructs a valid Pizza (required + variable toppings).
+> **PricingStrategy** separates the algorithm from the service and enables **DI**.
+> **PricingCatalog** stores price data so prices can differ by store without changing Pizza.
+> **StoreCatalogRegistry** resolves the catalog for a store.
+> **Factory** centralizes catalog creation.
+> For promotions I **wrap** the base strategy with a **Decorator** instead of modifying existing pricing logic.
+>
+> That gives **SRP** (one responsibility each), **OCP** (new rules via new strategies), **LSP** (strategies interchangeable), **ISP** (tiny pricing interface), and **DIP** (service depends on `PricingStrategy` abstraction)."
+
+That is a strong **SDE-2 LLD** answer — understanding, not memorization.

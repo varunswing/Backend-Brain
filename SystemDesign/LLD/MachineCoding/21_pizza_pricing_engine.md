@@ -1063,6 +1063,8 @@ class PricingServiceTest {
 
 ### 1. Strategy Pattern ⭐⭐⭐⭐⭐
 
+> **1-liner:** Hold a **variable of interface type** (`PricingStrategy strategy`) and swap which algorithm runs — choose behavior, don't hardcode if-else.
+
 **Most important pattern in this design.**
 
 **Problem:** Pricing can have different algorithms.
@@ -1156,6 +1158,8 @@ Normal    Discount    Festival
 
 ### 2. Factory Pattern ⭐⭐⭐⭐
 
+> **1-liner:** One place **creates** objects (catalogs); callers don't scatter construction logic — Factory builds, Strategy prices.
+
 Factory = **centralize object creation.**
 
 Here:
@@ -1214,6 +1218,8 @@ Strategy → calculates Price
 
 ### 3. Builder Pattern ⭐⭐⭐⭐
 
+> **1-liner:** Build step-by-step → `build()` validates → object is **closed to modification** (immutable/safe); never hand out a half-built Pizza.
+
 Pizza shape:
 
 ```text
@@ -1260,6 +1266,8 @@ if (size == null) throw new IllegalArgumentException("size required");
 ---
 
 ### 4. Registry Pattern ⭐⭐⭐⭐
+
+> **1-liner:** Lookup table `storeId → PricingCatalog` — pick the right price world without a static global catalog.
 
 Multiple stores:
 
@@ -1313,6 +1321,8 @@ Registry + **instance** catalogs solve multi-store. Static catalog cannot.
 
 ### 5. Decorator Pattern ⭐⭐⭐⭐
 
+> **1-liner:** **Wrap** an existing strategy to **change/add behavior** (e.g. +10% off) without editing the inner algorithm — Strategy chooses algo; Decorator layers on top.
+
 Normal price = ₹500. Want 10% off.
 
 You *could* edit `CatalogPricingStrategy` — that modifies existing code (bad OCP).
@@ -1351,6 +1361,8 @@ Coupon
 
 ### Strategy vs Decorator (interview trap)
 
+> **1-liner contrast:** **Strategy** = variable of type `PricingStrategy` → pick which algo. **Decorator** = wrap that algo → change/add behavior without rewriting it.
+
 | Strategy | Decorator |
 |----------|-----------|
 | **Choose** an algorithm | **Add behavior around** an existing algorithm |
@@ -1370,6 +1382,8 @@ Decorator: Keep this algorithm, wrap extra behavior on top.
 ---
 
 ### 6. Dependency Injection ⭐⭐⭐⭐⭐
+
+> **1-liner:** Don't `new` your dependency inside — **pass it in** (catalog/strategy into service) so multi-store + tests work.
 
 Not classic GoF, but critical here.
 
@@ -1424,6 +1438,8 @@ Same Pizza, different pricing.
 
 ### 7. SOLID — SRP ⭐⭐⭐⭐⭐
 
+> **1-liner:** One class, one job — Pizza = config, Catalog = prices, Strategy = algo, Service = wire; price change doesn't touch Pizza.
+
 **Single Responsibility:** one class → one reason to change.
 
 ```text
@@ -1446,6 +1462,8 @@ StoreCatalogRegistry     → store → catalog mapping
 ---
 
 ### 8. Open/Closed Principle ⭐⭐⭐⭐⭐
+
+> **1-liner:** **Extend** (new topping / new Strategy) without **editing** existing PricingService or Pizza — open to add, closed to rewrite.
 
 **Open for extension, closed for modification.**
 
@@ -1472,6 +1490,8 @@ Create `BuyTwoGetDiscountStrategy` — do **not** rewrite `PricingService`.
 
 ### 9. Liskov Substitution Principle
 
+> **1-liner:** Swap `CatalogPricingStrategy` ↔ `DiscountStrategy` in `PricingService` **without breaking** it — if you can substitute safely, that's LSP.
+
 Simple: any `PricingStrategy` impl can be passed where `PricingStrategy` is expected.
 
 ```text
@@ -1495,6 +1515,8 @@ Service does not break when you swap them.
 ---
 
 ### 10. Interface Segregation Principle
+
+> **1-liner:** Keep interfaces **tiny** (`price(Pizza)` only) — don't force Strategy to implement save/DB/notify junk it doesn't need.
 
 **Bad giant interface:**
 
@@ -1527,6 +1549,8 @@ Implementors are not forced to implement unrelated APIs.
 
 ### 11. Dependency Inversion Principle ⭐⭐⭐⭐⭐
 
+> **1-liner:** High-level `PricingService` depends on **abstraction** (`PricingStrategy`), not concrete `EnumMap` / `CatalogPricingStrategy`.
+
 **Bad:** high-level depends on details
 
 ```text
@@ -1555,6 +1579,8 @@ PricingService ───┘
 
 ### 12. Encapsulation
 
+> **1-liner:** Hide maps/lists inside; outside only calls `getBasePrice()` / getters — no direct `catalog.basePrices.put(...)`.
+
 Hide internal state; expose controlled access.
 
 ```java
@@ -1575,6 +1601,8 @@ Pizza similarly exposes toppings as an immutable/unmodifiable view — callers c
 
 ### 13. Abstraction
 
+> **1-liner:** Caller only knows `price(Pizza)` — hides whether price comes from EnumMap, DB, discount, or festival logic.
+
 Caller only knows:
 
 ```java
@@ -1591,6 +1619,8 @@ Does **not** need to know: EnumMap? DB? Discount? AI pricing?
 
 ### 14. Polymorphism
 
+> **1-liner:** Same call `strategy.price(pizza)` — **runtime picks** Catalog vs Discount implementation.
+
 ```java
 PricingStrategy strategy = ...;  // Catalog or Discount
 strategy.price(pizza);           // correct impl runs
@@ -1601,6 +1631,8 @@ Same call site, different behavior — polymorphism via Strategy.
 ---
 
 ### 15. Immutability
+
+> **1-liner:** After `build()`, Pizza is **frozen** (final + copyOf) — safe to share; nobody mutates toppings mid-pricing.
 
 After:
 
